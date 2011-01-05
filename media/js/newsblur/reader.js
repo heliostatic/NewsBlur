@@ -2181,8 +2181,13 @@
                             self.iframe_link_attacher_num_links = num_links;
                             $feed_iframe.contents().find('a')
                                 .unbind('click.NB-taskbar')
-                                .bind('click.NB-taskbar', function() {
-                                self.taskbar_show_return_to_page();
+                                .bind('click.NB-taskbar', function(e) {
+                                if (!NEWSBLUR.hotkeys.command) {
+                                    e.preventDefault();
+                                    self.open_link_in_story_view($(this).attr('href'));
+                                    self.taskbar_show_return_to_page();
+                                    return false;
+                                }
                             });
                         }
                     };
@@ -2233,11 +2238,15 @@
                                 axis: 'y', 
                                 easing: 'easeInOutQuint', 
                                 offset: 0, 
-                                queue: false 
+                                queue: false
                             });
                             return false;
+                        } else if (!NEWSBLUR.hotkeys.command) {
+                            e.preventDefault();
+                            self.open_link_in_story_view(href);
+                            self.taskbar_show_return_to_page();
+                            return false;
                         }
-                        self.taskbar_show_return_to_page();
                     });
                     $iframe_contents
                         .unbind('scroll')
@@ -2271,10 +2280,10 @@
                     }
                 } catch(e) {
                     $taskbar_return.css({'display': 'block'});
-                    $taskbar_view_page.addClass('NB-disabled');    
+                    // $taskbar_view_page.addClass('NB-disabled');    
                 } finally {
-                    $taskbar_return.css({'display': 'block'});
-                    $taskbar_view_page.addClass('NB-disabled');    
+                    // $taskbar_return.css({'display': 'block'});
+                    // $taskbar_view_page.addClass('NB-disabled');    
                 }
             }, 500);
         },
@@ -2825,15 +2834,26 @@
             this.load_story_iframe(story, story.story_feed_id);
         },
         
-        load_story_iframe: function(story, feed_id) {
+        open_link_in_story_view: function(link) {
+            story = this.active_story;
+            this.switch_taskbar_view('story', 'story');
+            this.load_story_iframe(story, story.story_feed_id, link);
+        },
+        
+        load_story_iframe: function(story, feed_id, link) {
             story = story || this.active_story;
             if (!story) return;
-            feed_id = feed_id || this.active_feed;
+            feed_id = feed_id || story.story_feed_id;
             var self = this;
             var $story_iframe = this.$s.$story_iframe;
+            var iframe_url = $story_iframe.attr('src');
+            link = link || story.story_permalink;
             
-            if ($story_iframe.attr('src') != story.story_permalink) {
-                // NEWSBLUR.log(['load_story_iframe', story.story_permalink, $story_iframe.attr('src')]);
+            NEWSBLUR.log(['load_story_iframe', story, feed_id, link, iframe_url]);
+            
+            if (!iframe_url || 
+                (iframe_url != link)) {
+                NEWSBLUR.log(['load_story_iframe', story.story_permalink, $story_iframe.attr('src'), link]);
                 this.unload_story_iframe();
             
                 if (!feed_id) {
@@ -2844,14 +2864,16 @@
             
                 this.flags.iframe_scroll_snap_back_prepared = true;
                 this.iframe_link_attacher_num_links = 0;
-                $story_iframe.removeAttr('src').attr({src: story.story_permalink});
+                _.delay(function() {
+                  $story_iframe.removeAttr('src').attr({src: link || story.story_permalink});
+                }, 40);
             }
         },
         
         unload_story_iframe: function() {
             var $story_iframe = this.$s.$story_iframe;
             
-            $story_iframe.removeAttr('src').attr({src: 'about:blank'});
+            $story_iframe.removeAttr('src').attr({src: ''});
         },
         
         // ===================
