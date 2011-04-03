@@ -12,7 +12,7 @@ from utils.user_functions import ajax_login_required
 from apps.profile.models import Profile, change_password
 from apps.reader.models import UserSubscription
 
-SINGLE_FIELD_PREFS = ('timezone',)
+SINGLE_FIELD_PREFS = ('timezone','feed_pane_size')
 SPECIAL_PREFERENCES = ('old_password', 'new_password',)
 
 @ajax_login_required
@@ -36,12 +36,14 @@ def set_preference(request):
                 if code == -1:
                     message = "Your old password is incorrect."
         else:
+            if preference_value in ["true", "false"]:
+                preference_value = True if preference_value == "true" else False
             preferences[preference_name] = preference_value
         
     request.user.profile.preferences = json.encode(preferences)
     request.user.profile.save()
     
-    response = dict(code=code, message=message)
+    response = dict(code=code, message=message, new_preferences=new_preferences)
     return response
 
 @ajax_login_required
@@ -143,8 +145,8 @@ def profile_is_premium(request):
     activated_subs = subs.filter(active=True).count()
     
     if retries > 30:
-        subject = "Premium activation failed: %s (%s)" % (request.user, request.user.pk)
-        message = "Check PayPalIPN"
+        subject = "Premium activation failed: %s (%s/%s)" % (request.user, activated_subs, total_subs)
+        message = """User: %s (%s) -- Email: %s""" % (request.user.username, request.user.pk, request.user.email)
         mail_admins(subject, message, fail_silently=True)
         code = -1
         request.user.profile.is_premium = True

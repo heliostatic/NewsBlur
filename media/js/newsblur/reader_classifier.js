@@ -1,6 +1,5 @@
 NEWSBLUR.ReaderClassifierTrainer = function(options) {
     var defaults = {
-        'score': 1,
         'training': true
     };
     
@@ -14,14 +13,12 @@ NEWSBLUR.ReaderClassifierTrainer = function(options) {
     this.trainer_iterator = -1;
     this.feed_id = null;
     this.options = $.extend({}, defaults, options);
-    this.score = this.options['score'];
     this.model = NEWSBLUR.AssetModel.reader();
     this.runner_trainer();
 };
 
 NEWSBLUR.ReaderClassifierFeed = function(feed_id, options) {
     var defaults = {
-        'score': 1,
         'training': false,
         'feed_loaded': true
     };
@@ -36,7 +33,6 @@ NEWSBLUR.ReaderClassifierFeed = function(feed_id, options) {
     this.feed_id = feed_id;
     this.trainer_iterator = -1;
     this.options = $.extend({}, defaults, options);
-    this.score = this.options['score'];
     this.model = NEWSBLUR.AssetModel.reader();
     this.runner_feed();
 };
@@ -44,7 +40,6 @@ NEWSBLUR.ReaderClassifierFeed = function(feed_id, options) {
 
 NEWSBLUR.ReaderClassifierStory = function(story_id, feed_id, options) {
     var defaults = {
-        'score': 1,
         'feed_loaded': true
     };
     
@@ -59,7 +54,6 @@ NEWSBLUR.ReaderClassifierStory = function(story_id, feed_id, options) {
     this.feed_id = feed_id;
     this.trainer_iterator = -1;
     this.options = $.extend({}, defaults, options);
-    this.score = this.options['score'];
     this.model = NEWSBLUR.AssetModel.reader();
     this.runner_story();
 };
@@ -224,10 +218,10 @@ var classifier_prototype = {
         
         this.feed = this.model.get_feed(this.feed_id);
         
-        if (this.options.feed_loaded) {
+        if (this.options.feed_loaded && this.feed) {
           this.feed_tags = this.model.get_feed_tags();
           this.feed_authors = this.model.get_feed_authors();
-          $('.NB-modal-subtitle .NB-modal-feed-image', this.$modal).attr('src', NEWSBLUR.Globals.google_favicon_url + this.feed['feed_link']);
+          $('.NB-modal-subtitle .NB-modal-feed-image', this.$modal).attr('src', $.favicon(this.feed.favicon));
           $('.NB-modal-subtitle .NB-modal-feed-title', this.$modal).html(this.feed['feed_title']);
         }
     },
@@ -343,7 +337,7 @@ var classifier_prototype = {
             $.make('h2', { className: 'NB-modal-title' }, ''),
             $.make('h2', { className: 'NB-modal-subtitle' }, [
                 (this.options['training'] && $.make('div', { className: 'NB-classifier-trainer-counts' })),
-                $.make('img', { className: 'NB-modal-feed-image feed_favicon', src: NEWSBLUR.Globals.google_favicon_url + this.feed.feed_link }),
+                $.make('img', { className: 'NB-modal-feed-image feed_favicon', src: $.favicon(this.feed.favicon) }),
                 $.make('span', { className: 'NB-modal-feed-title' }, this.feed.feed_title)
             ]),
             (this.options['feed_loaded'] &&
@@ -373,7 +367,6 @@ var classifier_prototype = {
                       )
                   ]),
                   (this.options['training'] && $.make('div', { className: 'NB-modal-submit' }, [
-                      $.make('input', { name: 'score', value: this.score, type: 'hidden' }),
                       $.make('input', { name: 'feed_id', value: this.feed_id, type: 'hidden' }),
                       $.make('a', { href: '#', className: 'NB-modal-submit-button NB-modal-submit-back' }, $.entity('&laquo;') + ' Back'),
                       $.make('a', { href: '#', className: 'NB-modal-submit-button NB-modal-submit-green NB-modal-submit-next NB-modal-submit-save' }, 'Save & Next '+$.entity('&raquo;')),
@@ -395,7 +388,6 @@ var classifier_prototype = {
         var self = this;
         var story = this.story;
         var feed = this.feed;
-        var opinion = (this.score == 1 ? 'like_' : 'dislike_');
         
         // NEWSBLUR.log(['Make Story', story, feed]);
         
@@ -419,19 +411,19 @@ var classifier_prototype = {
                     (story.story_authors && $.make('div', { className: 'NB-modal-field NB-fieldset' }, [
                         $.make('h5', 'Story Author'),
                         $.make('div', { className: 'NB-fieldset-fields NB-classifiers' },
-                            this.make_authors([story.story_authors], opinion)
+                            this.make_authors([story.story_authors])
                         )
                     ])),
                     (story.story_tags.length && $.make('div', { className: 'NB-modal-field NB-fieldset' }, [
                         $.make('h5', 'Story Categories &amp; Tags'),
                         $.make('div', { className: 'NB-classifier-tags NB-fieldset-fields NB-classifiers' },
-                            this.make_tags(story.story_tags, opinion)
+                            this.make_tags(story.story_tags)
                         )
                     ])),
                     $.make('div', { className: 'NB-modal-field NB-fieldset' }, [
                         $.make('h5', 'Everything by This Publisher'),
                         $.make('div', { className: 'NB-fieldset-fields NB-classifiers' },
-                            this.make_publisher(feed, opinion)
+                            this.make_publisher(feed)
                         )
                     ]),
                     $.make('div', { className: 'NB-modal-submit' }, [
@@ -441,11 +433,7 @@ var classifier_prototype = {
                         ' or ',
                         $.make('a', { href: '#', className: 'NB-modal-cancel' }, 'cancel')
                     ])
-                ]).bind('submit', function(e) {
-                    e.preventDefault();
-                    self.save_story();
-                    return false;
-                })
+                ])
             )
         ]);
     },
@@ -488,7 +476,7 @@ var classifier_prototype = {
         return $titles;
     },
     
-    make_authors: function(authors, opinion) {
+    make_authors: function(authors) {
         var $authors = [];
         
         for (var a in authors) {
@@ -555,7 +543,7 @@ var classifier_prototype = {
         return this.make_tags(tags);
     },
     
-    make_publisher: function(publisher, opinion) {
+    make_publisher: function(publisher) {
         var $publisher = this.make_classifier(publisher.feed_title, this.feed_id, 'feed');
         return $publisher;
     },
@@ -593,7 +581,7 @@ var classifier_prototype = {
                     (classifier_type == 'feed' && 
                         $.make('img', { 
                             className: 'feed_favicon', 
-                            src: NEWSBLUR.Globals.google_favicon_url + this.feed.feed_link 
+                            src: $.favicon(this.feed.favicon)
                         })),
                     $.make('b', classifier_type_title+': '),
                     $.make('span', classifier_title)
@@ -777,7 +765,7 @@ var classifier_prototype = {
             });
             $.targetIs(e, { tagSelector: '.NB-modal-submit-save.NB-modal-submit-next' }, function($t, $p){
                 e.preventDefault();
-                self.save_publisher(true);
+                self.save(true);
                 self.load_next_feed_in_trainer();
                 self.update_homepage_counts();
             });
@@ -794,7 +782,7 @@ var classifier_prototype = {
 
             $.targetIs(e, { tagSelector: '.NB-modal-submit-close' }, function($t, $p){
                 e.preventDefault();
-                self.save_publisher();
+                self.save();
             });
 
             $.targetIs(e, { tagSelector: '.NB-modal-submit-end' }, function($t, $p){
@@ -807,7 +795,7 @@ var classifier_prototype = {
         } else {
             $.targetIs(e, { tagSelector: '.NB-modal-submit-save:not(.NB-modal-submit-next)' }, function($t, $p){
                 e.preventDefault();
-                self.save_publisher();
+                self.save();
                 return false;
             });
         }
@@ -826,30 +814,33 @@ var classifier_prototype = {
     },
     
     serialize_classifier: function() {
-        var data = [];
+        var data = {};
         $('.NB-classifier', this.$modal).each(function() {
+            var value = $('.NB-classifier-input-like', this).val();
             if ($('.NB-classifier-input-like, .NB-classifier-input-dislike', this).is(':checked')) {
-                data.push([$('input:checked', this).attr('name'), $('.NB-classifier-input-like', this).val()]);
+                var name = $('input:checked', this).attr('name');
+                if (!data[name]) data[name] = [];
+                data[name].push(value);
             } else {
-                data.push(['remove_'+$('.NB-classifier-input-like', this).attr('name'), $('.NB-classifier-input-like', this).val()]);
+                var name = 'remove_'+$('.NB-classifier-input-like', this).attr('name');
+                if (!data[name]) data[name] = [];
+                data[name].push(value);
             }
         });
-        data.push(['feed_id', this.feed_id]);
+        
+        data['feed_id'] = this.feed_id;
         if (this.story_id) {
-            data.push(['story_id', this.story_id]);
+            data['story_id'] = this.story_id;
         }
-        data = _.map(data, function(c) { 
-            return [c[0], '=', c[1]].join(''); 
-        }).join('&');
         return data;
     },
         
-    save_publisher: function(keep_modal_open) {
+    save: function(keep_modal_open) {
         var self = this;
         var $save = $('.NB-modal-submit-save', this.$modal);
         var data = this.serialize_classifier();
+        var feed_id = this.feed_id;
         
-        NEWSBLUR.reader.update_opinions(this.$modal, this.feed_id);
         
         if (this.options['training']) {
             this.cache[this.feed_id] = this.$modal.clone();
@@ -859,9 +850,12 @@ var classifier_prototype = {
         }
         $save.addClass('NB-disabled').attr('disabled', true);
         
+        this.update_opinions();
         this.model.save_classifier_publisher(data, function() {
             if (!keep_modal_open) {
-                NEWSBLUR.reader.force_feed_refresh();
+                NEWSBLUR.reader.recalculate_story_scores(feed_id);
+                NEWSBLUR.reader.force_feeds_refresh(null, true);
+                // NEWSBLUR.reader.force_feed_refresh();
                 // NEWSBLUR.reader.open_feed(self.feed_id, true);
                 // TODO: Update counts in active feed.
                 $.modal.close();
@@ -869,19 +863,38 @@ var classifier_prototype = {
         });
     },
     
-    save_story: function() {
+    update_opinions: function() {
         var self = this;
-        var $save = $('.NB-modal-submit-save', this.$modal);
-        var story_id = this.story_id;
-        var data = this.serialize_classifier();
+        var feed_id = this.feed_id;
         
-        NEWSBLUR.reader.update_opinions(this.$modal, this.feed_id);
+        $('input[type=checkbox]', this.$modal).each(function() {
+            var $this = $(this);
+            var name = $this.attr('name').replace(/^(dis)?like_/, '');
+            var score = /^dislike/.test($this.attr('name')) ? -1 : 1;
+            var value = $this.val();
+            var checked = $this.attr('checked');
         
-        $save.text('Saving...').addClass('NB-disabled').attr('disabled', true);
-        this.model.save_classifier_story(story_id, data, function() {
-            NEWSBLUR.reader.force_feed_refresh();
-            // NEWSBLUR.reader.open_feed(self.feed_id, true);
-            $.modal.close();
+            if (checked) {
+                if (name == 'tag') {
+                    self.model.classifiers.tags[value] = score;
+                } else if (name == 'title') {
+                    self.model.classifiers.titles[value] = score;
+                } else if (name == 'author') {
+                    self.model.classifiers.authors[value] = score;
+                } else if (name == 'feed') {
+                    self.model.classifiers.feeds[feed_id] = score;
+                }
+            } else {
+                if (name == 'tag' && self.model.classifiers.tags[value] == score) {
+                    delete self.model.classifiers.tags[value];
+                } else if (name == 'title' && self.model.classifiers.titles[value] == score) {
+                    delete self.model.classifiers.titles[value];
+                } else if (name == 'author' && self.model.classifiers.authors[value] == score) {
+                    delete self.model.classifiers.authors[value];
+                } else if (name == 'feed' && self.model.classifiers.feeds[feed_id] == score) {
+                    delete self.model.classifiers.feeds[feed_id];
+                }
+            }
         });
     }
     

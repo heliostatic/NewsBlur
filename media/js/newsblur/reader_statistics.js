@@ -34,7 +34,7 @@ NEWSBLUR.ReaderStatistics.prototype = {
             $.make('div', { className: 'NB-modal-loading' }),
             $.make('h2', { className: 'NB-modal-title' }, 'Statistics &amp; History'),
             $.make('h2', { className: 'NB-modal-subtitle' }, [
-                $.make('img', { className: 'NB-modal-feed-image feed_favicon', src: NEWSBLUR.Globals.google_favicon_url + this.feed.feed_link }),
+                $.make('img', { className: 'NB-modal-feed-image feed_favicon', src: $.favicon(this.feed.favicon) }),
                 $.make('span', { className: 'NB-modal-feed-title' }, this.feed.feed_title)
             ]),
             $.make('div', { className: 'NB-modal-statistics-info' })
@@ -51,7 +51,7 @@ NEWSBLUR.ReaderStatistics.prototype = {
         this.feed_id = feed_id;
         this.feed = this.model.get_feed(feed_id);
         
-        $('.NB-modal-subtitle .NB-modal-feed-image', this.$modal).attr('src', NEWSBLUR.Globals.google_favicon_url + this.feed['feed_link']);
+        $('.NB-modal-subtitle .NB-modal-feed-image', this.$modal).attr('src', $.favicon(this.feed.favicon));
         $('.NB-modal-subtitle .NB-modal-feed-title', this.$modal).html(this.feed['feed_title']);
     },
     
@@ -163,17 +163,47 @@ NEWSBLUR.ReaderStatistics.prototype = {
                     $.make('div', { className: 'NB-statistics-label' }, 'Stories per month')
                 ]),
                 $.make('div', { id: 'NB-statistics-history-chart', className: 'NB-statistics-history-chart' })
+            ]),
+            $.make('div', { className: 'NB-statistics-stat NB-statistics-fetches'}, [
+                $.make('div', { className: 'NB-statistics-fetches-half'}, [
+                    $.make('div', { className: 'NB-statistics-label' }, 'Feed'),
+                    $.make('div', this.make_history(data, 'feed'))
+                ]),
+                $.make('div', { className: 'NB-statistics-fetches-half'}, [
+                    $.make('div', { className: 'NB-statistics-label' }, 'Page'),
+                    $.make('div', this.make_history(data, 'page'))
+                ])
             ])
         ]);
         
+        var count = _.isUndefined(data['subscriber_count']) && 'Loading ' || data['subscriber_count'];
         var $subscribers = $.make('div', { className: 'NB-statistics-subscribers' }, [
-            $.make('span', { className: 'NB-statistics-subscribers-count' }, ''+data['subscriber_count']),
+            $.make('span', { className: 'NB-statistics-subscribers-count' }, ''+count),
             $.make('span', { className: 'NB-statistics-subscribers-label' }, 'subscriber' + (data['subscriber_count']==1?'':'s'))
         ]);
         $('.NB-statistics-subscribers', this.$modal).remove();
         $('.NB-modal-subtitle', this.$modal).prepend($subscribers);
         
         return $stats;
+    },
+    
+    make_history: function(data, fetch_type) {
+        var fetches = data[fetch_type+'_fetch_history'];
+        if (!fetches) return;
+        
+        var $history = _.map(fetches, function(fetch) {
+            var feed_ok = _.contains([200, 304], fetch.status_code);
+            var status_class = feed_ok ? ' NB-ok ' : ' NB-error ';
+            return $.make('div', { className: 'NB-statistics-history-fetch' + status_class, title: feed_ok ? '' : fetch.exception }, [
+                $.make('div', { className: 'NB-statistics-history-fetch-date' }, fetch.fetch_date),
+                $.make('div', { className: 'NB-statistics-history-fetch-message' }, [
+                    fetch.message,
+                    $.make('div', { className: 'NB-statistics-history-fetch-code' }, ' ('+fetch.status_code+')')
+                ])
+            ]);
+        });
+
+        return $history;
     },
     
     make_charts: function(data) {

@@ -2,21 +2,21 @@
 
 DB_NAME='newsblur'
 date_now=`date +%Y_%m_%d_%H_%M`
-file_name='backup_postgresql_'${date_now}'.sql.gz'
+file_name='backup_postgresql_'${date_now}'.pgbackup'
 
 log() {
     echo $1
 }
 
 do_cleanup(){
-    sudo su postgres -c "rm ${file_name}"
-    log 'cleaning up....'
+    log 'cleaning up...'
+    rm ${file_name}
 }
 
 do_backup(){
     log 'snapshotting the db and creating archive'
-    time pg_dump -U newsblur ${DB_NAME} | gzip -c > ${file_name}
-    log 'data backd up and created snapshot'
+    pg_dump -U newsblur -Fc ${DB_NAME} > ${file_name}
+    log 'data backed up and created snapshot'
 }
 
 save_in_s3(){

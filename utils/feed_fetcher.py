@@ -6,11 +6,12 @@ from django.db import IntegrityError
 # from mongoengine.queryset import Q
 from apps.reader.models import UserSubscription, MUserStory
 from apps.rss_feeds.models import Feed, MStory
-from apps.rss_feeds.importer import PageImporter
+from apps.rss_feeds.page_importer import PageImporter
+from apps.rss_feeds.icon_importer import IconImporter
 from utils import feedparser
 from utils.story_functions import pre_process_story
 from utils import log as logging
-from utils.feed_functions import timelimit, TimeoutError
+from utils.feed_functions import timelimit, TimeoutError, mail_feed_error_to_admin, utf8encode
 import time
 import datetime
 import traceback
@@ -21,13 +22,10 @@ import xml.sax
 # Refresh feed code adapted from Feedjack.
 # http://feedjack.googlecode.com
 
-VERSION = '0.9'
 URL = 'http://www.newsblur.com/'
-USER_AGENT = 'NewsBlur Fetcher %s - %s' % (VERSION, URL)
 SLOWFEED_WARNING = 10
 ENTRY_NEW, ENTRY_UPDATED, ENTRY_SAME, ENTRY_ERR = range(4)
 FEED_OK, FEED_SAME, FEED_ERRPARSE, FEED_ERRHTTP, FEED_ERREXC = range(5)
-
 
 def mtime(ttime):
     """ datetime auxiliar function.
@@ -41,7 +39,7 @@ class FetchFeed:
         self.options = options
         self.fpf = None
     
-    @timelimit(30)
+    @timelimit(20)
     def fetch(self):
         """ 
         Uses feedparser to download the feed. Will be parsed later.
@@ -60,6 +58,11 @@ class FetchFeed:
             modified = None
             etag = None
             
+        USER_AGENT = 'NewsBlur Feed Fetcher (%s subscriber%s) - %s' % (
+            self.feed.num_subscribers,
+            's' if self.feed.num_subscribers != 1 else '',
+            URL
+        )
         self.fpf = feedparser.parse(self.feed.feed_address,
                                     agent=USER_AGENT,
                                     etag=etag,
@@ -89,7 +92,7 @@ class ProcessFeed:
         self.entry_keys = sorted(self.entry_trans.keys())
     
     def refresh_feed(self):
-        self.feed = Feed.objects.get(pk=self.feed_id) 
+        self.feed = Feed.objects.using('default').get(pk=self.feed_id) 
         
     def process(self, first_run=True):
         """ Downloads and parses a feed.
@@ -124,7 +127,8 @@ class ProcessFeed:
                 return FEED_SAME, ret_values
             
             if self.fpf.status in (302, 301):
-                self.feed.feed_address = self.fpf.href
+                if not self.fpf.href.endswith('feedburner.com/atom.xml'):
+                    self.feed.feed_address = self.fpf.href
                 if first_run:
                     self.feed.schedule_feed_fetch_immediately()
                 if not self.fpf.entries:
@@ -177,20 +181,25 @@ class ProcessFeed:
         except:
             pass
         
+        self.fpf.entries = self.fpf.entries[:50]
+        
         self.feed.feed_title = self.fpf.feed.get('title', self.feed.feed_title)
-        self.feed.feed_tagline = self.fpf.feed.get('tagline', self.feed.feed_tagline)
-        self.feed.feed_link = self.fpf.feed.get('link', self.feed.feed_link)
+        tagline = self.fpf.feed.get('tagline', self.feed.data.feed_tagline)
+        if tagline:
+            self.feed.data.feed_tagline = utf8encode(tagline)
+            self.feed.data.save()
+        self.feed.feed_link = self.fpf.feed.get('link') or self.fpf.feed.get('id') or self.feed.feed_link
+        
         self.feed.last_update = datetime.datetime.utcnow()
         
         guids = []
         for entry in self.fpf.entries:
             if entry.get('id', ''):
                 guids.append(entry.get('id', ''))
-            elif entry.title:
-                guids.append(entry.title)
-            elif entry.link:
+            elif entry.get('link'):
                 guids.append(entry.link)
-        
+            elif entry.get('title'):
+                guids.append(entry.title)
         self.feed.save()
 
         # Compare new stories to existing stories, adding and updating
@@ -210,9 +219,6 @@ class ProcessFeed:
             story_feed_id=self.feed.pk
         ).limit(len(story_guids))
         
-        logging.info(u'   ---> [%-30s] Parsing: %s existing stories' % (
-                      unicode(self.feed)[:30],
-                      len(existing_stories))) 
         # MStory.objects(
         #     (Q(story_date__gte=start_date) & Q(story_date__lte=end_date))
         #     | (Q(story_guid__in=story_guids)),
@@ -258,7 +264,7 @@ class Dispatcher:
 
     def refresh_feed(self, feed_id):
         """Update feed, since it may have changed"""
-        return Feed.objects.get(pk=feed_id)
+        return Feed.objects.using('default').get(pk=feed_id)
         
     def process_feed_wrapper(self, feed_queue):
         delta = None
@@ -275,7 +281,7 @@ class Dispatcher:
                 ENTRY_ERR: 0
             }
             start_time = datetime.datetime.utcnow()
-
+            ret_feed = FEED_ERREXC
             try:
                 feed = self.refresh_feed(feed_id)
                 
@@ -310,7 +316,7 @@ class Dispatcher:
                 continue
             except TimeoutError, e:
                 logging.debug('   ---> [%-30s] Feed fetch timed out...' % (unicode(feed)[:30]))
-                feed.save_feed_history(505, e.msg, e.fp.read())
+                feed.save_feed_history(505, 'Timeout', '')
                 fetched_feed = None
             except Exception, e:
                 logging.debug('[%d] ! -------------------------' % (feed_id,))
@@ -320,6 +326,7 @@ class Dispatcher:
                 ret_feed = FEED_ERREXC 
                 feed.save_feed_history(500, "Error", tb)
                 fetched_feed = None
+                mail_feed_error_to_admin(feed, e)
             
             feed = self.refresh_feed(feed_id)
             if ((self.options['force']) or 
@@ -328,10 +335,37 @@ class Dispatcher:
                  (ret_feed == FEED_OK or
                   (ret_feed == FEED_SAME and feed.stories_last_month > 10)))):
                   
-                logging.debug(u'   ---> [%-30s] Fetching page' % (unicode(feed)[:30]))
+                logging.debug(u'   ---> [%-30s] Fetching page: %s' % (unicode(feed)[:30], feed.feed_link))
                 page_importer = PageImporter(feed.feed_link, feed)
-                page_importer.fetch_page()
-
+                try:
+                    page_importer.fetch_page()
+                except TimeoutError, e:
+                    logging.debug('   ---> [%-30s] Page fetch timed out...' % (unicode(feed)[:30]))
+                    feed.save_page_history(555, 'Timeout', '')
+                except Exception, e:
+                    logging.debug('[%d] ! -------------------------' % (feed_id,))
+                    tb = traceback.format_exc()
+                    logging.error(tb)
+                    logging.debug('[%d] ! -------------------------' % (feed_id,))
+                    feed.save_page_history(550, "Page Error", tb)
+                    fetched_feed = None
+                    mail_feed_error_to_admin(feed, e)
+                    
+                logging.debug(u'   ---> [%-30s] Fetching icon: %s' % (unicode(feed)[:30], feed.feed_link))
+                icon_importer = IconImporter(feed, force=self.options['force'])
+                try:
+                    icon_importer.save()
+                except TimeoutError, e:
+                    logging.debug('   ---> [%-30s] Icon fetch timed out...' % (unicode(feed)[:30]))
+                    feed.save_page_history(556, 'Timeout', '')
+                except Exception, e:
+                    logging.debug('[%d] ! -------------------------' % (feed_id,))
+                    tb = traceback.format_exc()
+                    logging.error(tb)
+                    logging.debug('[%d] ! -------------------------' % (feed_id,))
+                    # feed.save_feed_history(560, "Icon Error", tb)
+                    mail_feed_error_to_admin(feed, e)
+                
             feed = self.refresh_feed(feed_id)
             delta = datetime.datetime.utcnow() - start_time
             
@@ -342,9 +376,9 @@ class Dispatcher:
             except IntegrityError:
                 logging.debug("   ---> [%-30s] IntegrityError on feed: %s" % (unicode(feed)[:30], feed.feed_address,))
             
-            done_msg = (u'%2s ---> [%-30s] Processed in %s [%s]' % (
+            done_msg = (u'%2s ---> [%-30s] Processed in %s (%s) [%s]' % (
                 identity, feed.feed_title[:30], unicode(delta),
-                self.feed_trans[ret_feed],))
+                feed.pk, self.feed_trans[ret_feed],))
             logging.debug(done_msg)
             
             self.feed_stats[ret_feed] += 1
@@ -365,8 +399,9 @@ class Dispatcher:
                                                     active=True,
                                                     user__profile__last_seen_on__gte=UNREAD_CUTOFF)\
                                             .order_by('-last_read_date')
-        logging.debug(u'   ---> [%-30s] Computing scores for all feed subscribers: %s subscribers' % (
-                      unicode(feed)[:30], user_subs.count()))
+        logging.debug(u'   ---> [%-30s] Computing scores: %s (%s/%s/%s) subscribers' % (
+                      unicode(feed)[:30], user_subs.count(),
+                      feed.num_subscribers, feed.active_subscribers, feed.premium_subscribers))
         
         stories_db = MStory.objects(story_feed_id=feed.pk,
                                     story_date__gte=UNREAD_CUTOFF)

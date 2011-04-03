@@ -1,0 +1,79 @@
+import os
+import base64
+from django.conf import settings
+from django.http import HttpResponse
+from django.shortcuts import render_to_response
+from django.template import RequestContext
+from apps.profile.models import Profile
+from apps.reader.models import UserSubscription, UserSubscriptionFolders
+from utils import json_functions as json
+from utils import log as logging
+
+def add_site_load_script(request, token):
+    code = 0
+    def image_base64(image_name):
+        image_file = open(os.path.join(settings.MEDIA_ROOT, 'img/icons/silk/%s.png' % image_name))
+        return base64.b64encode(image_file.read())
+    
+    accept_image     = image_base64('accept')
+    error_image      = image_base64('error')
+    new_folder_image = image_base64('arrow_down_right')
+    add_image        = image_base64('add')
+
+    try:
+        profile = Profile.objects.get(secret_token=token)
+        usf = UserSubscriptionFolders.objects.get(
+            user=profile.user
+        )
+    except Profile.DoesNotExist:
+        code = -1
+    except UserSubscriptionFolders.DoesNotExist:
+        code = -1
+    
+    return render_to_response('api/bookmarklet_subscribe.js', {
+        'code': code,
+        'token': token,
+        'folders': usf.folders,
+        'accept_image': accept_image,
+        'error_image': error_image,
+        'add_image': add_image,
+        'new_folder_image': new_folder_image,
+    }, 
+    context_instance=RequestContext(request),
+    mimetype='application/javascript')
+
+def add_site(request, token):
+    code       = 0
+    url        = request.GET['url']
+    folder     = request.GET['folder']
+    new_folder = request.GET.get('new_folder')
+    callback   = request.GET['callback']
+    
+    if not url:
+        code = -1
+    else:
+        try:
+            profile = Profile.objects.get(secret_token=token)
+            if new_folder:
+                usf, _ = UserSubscriptionFolders.objects.get_or_create(user=profile.user)
+                usf.add_folder(folder, new_folder)
+                folder = new_folder
+            code, message, us = UserSubscription.add_subscription(
+                user=profile.user, 
+                feed_address=url,
+                folder=folder,
+                bookmarklet=True
+            )
+        except Profile.DoesNotExist:
+            code = -1
+    
+    if code > 0:
+        message = 'OK'
+        
+    logging.user(profile.user, "~FRAdding URL from site: ~SB%s (in %s)" % (url, folder))
+    
+    return HttpResponse(callback + '(' + json.encode({
+        'code':    code,
+        'message': message,
+        'usersub': us and us.feed.pk,
+    }) + ')', mimetype='text/plain')

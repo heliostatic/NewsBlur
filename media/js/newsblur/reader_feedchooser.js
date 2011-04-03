@@ -17,6 +17,7 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
         _.defer(_.bind(function() { this.open_modal(); }, this));
         this.find_feeds_in_feed_list();
         this.initial_load_feeds();
+        this.choose_dollar_amount(2);
         
         this.flags = {
             'has_saved': false
@@ -34,7 +35,7 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
                 $.make('b', [
                     'You have a ',
                     $.make('span', { style: 'color: #303060;' }, 'Standard Account'),
-                    ', which can follow up to '+this.MAX_FEEDS+' sites at a time.'
+                    ', which can follow up to '+this.MAX_FEEDS+' sites.'
                 ]),
                 'You can always change these.'
             ]),
@@ -77,30 +78,46 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
                 ]),
                 $.make('li', { className: 'NB-3' }, [
                   $.make('div', { className: 'NB-feedchooser-premium-bullet-image' }),
-                  'Access to future premium-only features like search, starring, sending to Instapaper.'
+                  'Access to the premium-only River of News.'
                 ]),
                 $.make('li', { className: 'NB-4' }, [
+                  $.make('div', { className: 'NB-feedchooser-premium-bullet-image' }),
+                  'Access to the future premium-only features like searching and visualizations.'
+                ]),
+                $.make('li', { className: 'NB-5' }, [
                   $.make('div', { className: 'NB-feedchooser-premium-bullet-image' }),
                   'You feed my poor, hungry dog for 6 days!',
                   $.make('img', { className: 'NB-feedchooser-premium-poor-hungry-dog', src: NEWSBLUR.Globals.MEDIA_URL + '/img/reader/shiloh.jpg' })
                 ]),
-                $.make('li', { className: 'NB-5' }, [
+                $.make('li', { className: 'NB-6' }, [
                   $.make('div', { className: 'NB-feedchooser-premium-bullet-image' }),
                   'You are supporting an indie developer.'
                 ]),
-                $.make('li', { className: 'NB-6' }, [
+                $.make('li', { className: 'NB-7' }, [
                   $.make('div', { className: 'NB-feedchooser-premium-bullet-image' }),
-                  $.make('span', { className: 'NB-feedchooser-premium-cost-dollars' }, '$12'),
-                  '/',
-                  $.make('span', { className: 'NB-feedchooser-premium-cost-time' }, 'year'),
-                  '. That\'s three lattes in 12 months.'
+                  'Choose how much you would like to pay.',
+                  $.make('div', { style: 'color: #490567' }, 'The only difference is happiness.')
                 ])
               ]),
               $.make('div', { className: 'NB-modal-submit NB-modal-submit-paypal' }, [
                   // this.make_google_checkout()
                   $.make('div', { className: 'NB-feedchooser-paypal' }),
                   $.make('div', { className: 'NB-feedchooser-dollar' }, [
-                      $.make('span', { className: 'NB-feedchooser-dollar-month' }, 'Just $1/month!')
+                      $.make('div', { className: 'NB-feedchooser-dollar-value NB-1' }, [
+                          $.make('div', { className: 'NB-feedchooser-dollar-image' }),
+                          $.make('div', { className: 'NB-feedchooser-dollar-month' }, '$1/month'),
+                          $.make('div', { className: 'NB-feedchooser-dollar-year' }, '($12/year)')
+                      ]),
+                      $.make('div', { className: 'NB-feedchooser-dollar-value NB-2' }, [
+                          $.make('div', { className: 'NB-feedchooser-dollar-image' }),
+                          $.make('div', { className: 'NB-feedchooser-dollar-month' }, '$2/month'),
+                          $.make('div', { className: 'NB-feedchooser-dollar-year' }, '($24/year)')
+                      ]),
+                      $.make('div', { className: 'NB-feedchooser-dollar-value NB-3' }, [
+                          $.make('div', { className: 'NB-feedchooser-dollar-image' }),
+                          $.make('div', { className: 'NB-feedchooser-dollar-month' }, '$3/month'),
+                          $.make('div', { className: 'NB-feedchooser-dollar-year' }, '($36/year)')
+                      ])
                   ])
               ])
             ])
@@ -108,10 +125,11 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
     },
     
     make_paypal_button: function() {
-      var $paypal = $('.NB-feedchooser-paypal', this.$modal);
-      $.get('/profile/paypal_form', function(response) {
-        $paypal.html(response);
-      });
+        var self = this;
+        var $paypal = $('.NB-feedchooser-paypal', this.$modal);
+        $.get('/profile/paypal_form', function(response) {
+          $paypal.html(response);
+        });
     },
     
     make_google_button: function() {
@@ -158,8 +176,8 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
     open_modal: function() {
         var self = this;
         this.$modal.modal({
-            'minWidth': 750,
-            'maxWidth': 750,
+            'minWidth': 780,
+            'maxWidth': 780,
             'overlayClose': true,
             'onOpen': function (dialog) {
                 dialog.overlay.fadeIn(200, function () {
@@ -216,7 +234,7 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
         var $feeds = {};
         
         $('.feed', $feed_list).each(function() {
-            var feed_id = $(this).data('feed_id');
+            var feed_id = parseInt($(this).attr('data-id'), 10);
             if (!(feed_id in $feeds)) {
                 $feeds[feed_id] = $([]);
             }
@@ -320,7 +338,7 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
             // Approve or decline
             var feeds = [];
             $feeds.each(function() {
-                var feed_id = $(this).data('feed_id');
+                var feed_id = parseInt($(this).attr('data-id'), 10);
                 
                 if (_.contains(active_feeds, feed_id)) {
                     self.add_feed_to_approve(feed_id);
@@ -363,6 +381,21 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
       $('.NB-module-account-trainer').removeClass('NB-hidden').hide().slideDown(500);
     },
     
+    choose_dollar_amount: function(step) {
+        var $value = $('.NB-feedchooser-dollar-value', this.$modal);
+        var $input = $('input[name=a3]');
+
+        $value.removeClass('NB-selected');
+        $value.filter('.NB-'+step).addClass('NB-selected');
+        if (step == 1) {
+            $input.val(12);
+        } else if (step == 2) {
+            $input.val(24);
+        } else if (step == 3) {
+            $input.val(36);
+        }
+    },
+    
     // ===========
     // = Actions =
     // ===========
@@ -373,7 +406,7 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
         $.targetIs(e, { tagSelector: '.feed' }, _.bind(function($t, $p) {
             e.preventDefault();
             
-            var feed_id = $t.data('feed_id');
+            var feed_id = parseInt($t.attr('data-id'), 10);
             if (_.contains(this.approve_list, feed_id)) {
                 this.add_feed_to_decline(feed_id, true);
             } else {
@@ -385,10 +418,23 @@ NEWSBLUR.ReaderFeedchooser.prototype = {
             e.preventDefault();
             this.save();
         }, this));
-        
+              
         $.targetIs(e, { tagSelector: '.NB-modal-submit-add' }, _.bind(function($t, $p) {
             e.preventDefault();
             this.close_and_add();
+        }, this));
+        
+        $.targetIs(e, { tagSelector: '.NB-feedchooser-dollar-value' }, _.bind(function($t, $p) {
+            e.preventDefault();
+            var step;
+            if ($t.hasClass('NB-1')) {
+                step = 1;
+            } else if ($t.hasClass('NB-2')) {
+                step = 2;
+            } else if ($t.hasClass('NB-3')) {
+                step = 3;
+            }
+            this.choose_dollar_amount(step);
         }, this));
     },
 

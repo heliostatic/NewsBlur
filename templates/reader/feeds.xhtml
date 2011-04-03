@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% load typogrify_tags %}
+{% load typogrify_tags recommendations_tags %}
 
 {% block content %}
 
@@ -13,9 +13,24 @@ $(document).ready(function() {
 </script>
 
 <h1 class="NB-splash-heading">NewsBlur</h1>
-<h2 class="NB-splash-heading">- A feed reader with intelligence.</h2>
+<h2 class="NB-splash-heading">- A visual feed reader with intelligence.</h2>
 
 <div id="NB-splash">
+
+  <div class="NB-splash-info NB-splash-blur">
+    <img class="NB-splash-title" src="{{ MEDIA_URL }}/img/logo_newsblur_blur.png" />
+    <ul class="NB-splash-links">
+      <li class="NB-splash-link NB-first NB-splash-link-twitter"><a href="http://twitter.com/samuelclay">@samuelclay</a></li>
+      <li class="NB-splash-link NB-first NB-splash-link-twitter"><a href="http://twitter.com/newsblur">@newsblur</a></li>
+      <li class="NB-splash-link NB-first NB-splash-link-github"><a href="http://github.com/samuelclay">GitHub</a></li>
+    </ul>
+  </div>
+      
+  <div class="NB-modules-center" style="margin-left: {{ user_profile.feed_pane_size }}px">
+    {% if recommended_feeds %}
+      {% render_recommended_feed recommended_feeds %}
+    {% endif %}
+  </div>
 
   <div class="NB-account">
     
@@ -95,8 +110,8 @@ $(document).ready(function() {
             How It Works
           </div>
           <div class="NB-module-header-right">
-            <a href="#" class="NB-module-direction NB-module-previous-page {% if howitworks_page == 0 %}NB-disabled{% endif %}"></a>
             <a href="#" class="NB-module-direction NB-module-next-page {% if howitworks_page == 5 %}NB-disabled{% endif %}"></a>
+            <a href="#" class="NB-module-direction NB-module-previous-page {% if howitworks_page == 0 %}NB-disabled{% endif %}"></a>
           </div>
         </h5>
         
@@ -168,7 +183,7 @@ $(document).ready(function() {
           <table class="NB-howitworks-page-description">
             <tr>
               <td>
-                {% filter typogrify %}Use the iPhone app, available before January 2011.{% endfilter %}
+                {% filter typogrify %}Use the iPhone app, available in Summer 2011.{% endfilter %}
               </td>
             </tr>
           </table>
@@ -190,7 +205,7 @@ $(document).ready(function() {
       </div>
       
     {% else %}
-    
+      
       <div class="NB-module NB-module-stats">
         <h5 class="NB-module-header">
           Welcome, {{ user.username }}
@@ -225,11 +240,11 @@ $(document).ready(function() {
             {% else %}
               
               <div class="NB-modal-submit">
-                <div class="NB-modal-submit-green NB-modal-submit-button NB-module-account-upgrade NB-module-account-premium">Go Premium!</div>
+                <div class="NB-modal-submit-green NB-modal-submit-button NB-module-account-upgrade NB-module-account-premium NB-javascript">Go Premium!</div>
                 {% if feed_count == 0 %}
-                    <div class="NB-modal-submit-green NB-modal-submit-button NB-task-add">Add Sites</div>
+                    <div class="NB-modal-submit-green NB-modal-submit-button NB-task-add NB-javascript">Add Sites</div>
                 {% else %}
-                    <div class="{% if active_count == 0 %}NB-modal-submit-green{% else %}NB-modal-submit-close{% endif %} NB-modal-submit-button NB-module-account-upgrade">Choose Your 64</div>
+                    <div class="{% if active_count == 0 %}NB-modal-submit-green{% else %}NB-modal-submit-close{% endif %} NB-modal-submit-button NB-module-account-upgrade NB-javascript">Choose Your 64</div>
                 {% endif %}
               </div>
             {% endif %}
@@ -247,7 +262,7 @@ $(document).ready(function() {
           </h3>
           <div class="NB-module-account-title">
               <div class="NB-modal-submit">
-                <div class="NB-modal-submit-green NB-modal-submit-button NB-module-account-train">Launch Intelligence Trainer</div>
+                <div class="NB-modal-submit-green NB-modal-submit-button NB-module-account-train NB-javascript">Launch Intelligence Trainer</div>
               </div>
           </div>
         </div>
@@ -273,8 +288,9 @@ $(document).ready(function() {
             });
             </script>
           {% endif %}
+          <a href="#" class="NB-module-direction NB-module-next-page NB-javascript"></a>
           <a href="#" class="NB-module-direction NB-module-previous-page NB-disabled"></a>
-          <a href="#" class="NB-module-direction NB-module-next-page"></a>
+          <div class="NB-spinner NB-left"></div>
         </div>
       </h5>
       
@@ -297,15 +313,15 @@ $(document).ready(function() {
   </div>
 
   <div class="NB-splash-info">
+    <img class="NB-splash-title" src="{{ MEDIA_URL }}/img/logo_newsblur.png" />
     <ul class="NB-splash-links">
-      <li class="NB-splash-link NB-first NB-splash-link-twitter"><a href="http://twitter.com/samuelclay">@samuelclay</a></li>
+      {# <li class="NB-splash-link NB-first NB-splash-link-twitter"><a href="http://twitter.com/samuelclay">@samuelclay</a></li> #}
+      <li class="NB-splash-link NB-splash-meta-faq"><a href="#faq">FAQ</a></li>
       <li class="NB-splash-link NB-splash-meta-about"><a href="#about">About</a></li>
-      <li class="NB-splash-link NB-first NB-splash-link-twitter"><a href="http://twitter.com/newsblur">@newsblur</a></li>
-      <li class="NB-splash-link NB-splash-meta-faq"><a href="#faq">Questions</a></li>
-      <li class="NB-splash-link NB-first NB-splash-link-github"><a href="http://github.com/samuelclay">GitHub</a></li>
-      <li class="NB-splash-link"><a href="mailto:samuel@ofbrooklyn.com">Email Samuel</a></li>
+      <li class="NB-splash-link NB-splash-link-blog"><a href="http://blog.newsblur.com">The Blog</a></li>
+      {# <li class="NB-splash-link NB-first NB-splash-link-twitter"><a href="http://twitter.com/newsblur">@newsblur</a></li> #}
+      {# <li class="NB-splash-link NB-first NB-splash-link-github"><a href="http://github.com/samuelclay">GitHub</a></li> #}
     </ul>
-    <img class="NB-splash-title" src="{{ MEDIA_URL }}/img/reader/newsblur_logo.png" />
   </div>
 
 </div>
@@ -313,41 +329,54 @@ $(document).ready(function() {
 
 
 <div class="left-pane">
+
+    <div class="left-north">
+      <div class="NB-feeds-header-dashboard">
+        <div class="NB-feeds-header-right">
+          <div class="NB-feeds-header-sites">&nbsp;</div>
+        </div>
+        <div class="NB-feeds-header-left">
+          <span class="NB-feeds-header-count NB-feeds-header-negative NB-empty">0</span>
+          <span class="NB-feeds-header-count NB-feeds-header-neutral NB-empty">0</span>
+          <span class="NB-feeds-header-count NB-feeds-header-positive NB-empty">0</span>
+        </div>
+        <div class="NB-feeds-header-home">Dashboard</div>
+      </div>
+    </div>
     
     <div class="left-center">
 
       <div class="left-center-content NB-feedlist">
         <div id="NB-feeds-list-loader">Everything is on its way...</div>
-        <div class="NB-feeds-header-container">
-          <div class="NB-feeds-header">
-            <div class="NB-feeds-header-right">
-              <div class="NB-feeds-header-sites">&nbsp;</div>
-            </div>
-            <div class="NB-feeds-header-left">
-              <span class="NB-feeds-header-count NB-feeds-header-negative NB-empty">0</span>
-              <span class="NB-feeds-header-count NB-feeds-header-neutral NB-empty">0</span>
-              <span class="NB-feeds-header-count NB-feeds-header-positive NB-empty">0</span>
-            </div>
-            <div class="NB-feeds-header-home">Dashboard</div>
-          </div>
-          <!--<div class="NB-feeds-header-river-container">
-            <div class="NB-feeds-header-river NB-empty">
-              <div class="NB-feeds-header-river-count unread_count"></div>
-              <div class="NB-feeds-header-river-icon"></div>
-              <div class="NB-feeds-header-river-title">
+        <div class="NB-feeds-header-wrapper">
+          
+          <div class="NB-feeds-header-container NB-feeds-header-river-container">
+            <div class="NB-feeds-header NB-feeds-header-river NB-empty">
+              <div class="NB-feeds-header-count unread_count"></div>
+              <div class="NB-feeds-header-icon"></div>
+              <div class="NB-feeds-header-title">
                 Everything
               </div>
             </div>
-          </div>-->
-          <div class="NB-feeds-header-starred-container">
-            <div class="NB-feeds-header-starred NB-empty">
-              <div class="NB-feeds-header-starred-count unread_count"></div>
-              <div class="NB-feeds-header-starred-icon"></div>
-              <div class="NB-feeds-header-starred-title">
+          </div>
+          
+          <div class="NB-feeds-header-container NB-feeds-header-starred-container">
+            <div class="NB-feeds-header NB-feeds-header-starred NB-empty">
+              <div class="NB-feeds-header-count unread_count"></div>
+              <div class="NB-feeds-header-icon"></div>
+              <div class="NB-feeds-header-title">
                 Saved Stories
               </div>
             </div>
           </div>
+          
+          <div class="NB-feeds-header-container NB-feeds-header-tryfeed-container">
+            <div class="NB-feeds-header NB-feeds-header-tryfeed">
+              <img class="NB-feeds-header-icon" src="" />
+              <div class="NB-feeds-header-title"></div>
+            </div>
+          </div>
+          
         </div>
         <ul class="folder NB-feedlist" id="feed_list"></ul>
       </div>
@@ -380,8 +409,8 @@ $(document).ready(function() {
           </div>
         </div>
         <ul class="taskbar_nav taskbar_nav_feeds">
-          <li class="task_button task_button_menu NB-task-add"></li>
-          <li class="task_button task_button_menu NB-task-manage NB-disabled"></li>
+          <li class="task_button task_button_menu NB-task-add" title="Add sites"></li>
+          <li class="task_button task_button_menu NB-task-manage NB-disabled" title="Manage NewsBlur"></li>
         </ul>
         <div class="NB-taskbar-intelligence">
           <div class="NB-taskbar-intelligence-indicator NB-taskbar-intelligence-negative"></div>
@@ -389,6 +418,7 @@ $(document).ready(function() {
           <div class="NB-taskbar-intelligence-indicator NB-taskbar-intelligence-positive"></div>
           <div class="NB-intelligence-slider"></div>
         </div>
+        <div class="NB-taskbar-sidebar-toggle-close" title="Hide sidebar"></div>
       </div>
     </div>
 
@@ -396,8 +426,10 @@ $(document).ready(function() {
 
 <div class="NB-menu-manage-container"></div>
 
-<div class="right-pane">
+<div class="NB-taskbar-sidebar-toggle-open" title="Show sidebar"><div class="NB-taskbar-sidebar-toggle-open-image"></div></div>
     
+<div class="right-pane">
+  
     <div id="story_titles" class="right-north"></div>
     <div class="content-pane">
         <div id="story_taskbar" class="NB-taskbar-container content-north">
@@ -405,6 +437,10 @@ $(document).ready(function() {
             <ul class="taskbar_nav taskbar_nav_view">
               <li class="task_button task_button_view task_view_page NB-active">
                 <span class="NB-task-title">Original</span>
+                <span class="NB-task-original-return NB-task-title">
+                  <div>Return to</div>
+                  <div>Original</div>
+                </span>
                 <div class="NB-task-view-switch-arrow NB-task-view-page-to-feed-arrow"></div>
               </li>
               <li class="task_button task_button_view task_view_feed">
@@ -413,14 +449,6 @@ $(document).ready(function() {
               </li>
               <li class="task_button task_button_view task_view_story">
                 <span class="NB-task-title">Story</span>
-              </li>
-            </ul>
-            <ul class="taskbar_nav taskbar_nav_return">
-              <li class="task_button task_return">
-                <span class="NB-task-title">
-                  <div>Return to</div>
-                  <div>Original</div>
-                </span>
               </li>
             </ul>
             <ul class="taskbar_nav taskbar_nav_story first">
@@ -447,9 +475,12 @@ $(document).ready(function() {
     
         <div id="story_pane" class="content-center">
             <div class="NB-story-pane-container">
-        		<iframe id="feed_iframe" class="NB-feed-iframe"></iframe>
-        		<div class="NB-feed-story-view NB-view-hidden"></div>
-        		<iframe id="story_iframe" class="NB-story-iframe"></iframe>
+              <iframe id="feed_iframe" class="NB-feed-iframe"></iframe>
+              <div class="NB-feed-story-view NB-view-hidden">
+                <div class="NB-feed-story-view-floater"></div>
+                <ul class="NB-feed-stories"></ul>
+              </div>
+              <iframe id="story_iframe" class="NB-story-iframe"></iframe>
             </div>
         </div>
         

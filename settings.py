@@ -13,6 +13,7 @@ TEMPLATE_DIRS = (''.join([CURRENT_DIR, '/templates']),)
 MEDIA_ROOT = ''.join([CURRENT_DIR, '/media'])
 UTILS_ROOT = ''.join([CURRENT_DIR, '/utils'])
 LOG_FILE = ''.join([CURRENT_DIR, '/logs/newsblur.log'])
+IMAGE_MASK = ''.join([CURRENT_DIR, '/media/img/mask.png'])
 
 # ==============
 # = PYTHONPATH =
@@ -85,7 +86,7 @@ MIDDLEWARE_CLASSES = (
 COMPRESS_JS = {
     'all': {
         'source_filenames': (
-            'js/jquery-1.4.3.js',
+            'js/jquery-1.5.1.js',
             'js/inflector.js',
             'js/jquery.json.js',
             'js/jquery.easing.js',
@@ -115,9 +116,11 @@ COMPRESS_JS = {
             'js/underscore.js',
             'js/newsblur/assetmodel.js',
             'js/newsblur/reader.js',
+            'js/newsblur/generate_bookmarklet.js',
             'js/newsblur/reader_classifier.js',
             'js/newsblur/reader_add_feed.js',
             'js/newsblur/reader_mark_read.js',
+            'js/newsblur/reader_goodies.js',
             'js/newsblur/reader_preferences.js',
             'js/newsblur/reader_feedchooser.js',
             'js/newsblur/reader_statistics.js',
@@ -134,12 +137,25 @@ COMPRESS_JS = {
         ),
         'output_filename': 'js/paypal-compressed-?.js',
     },
+    'bookmarklet': {
+        'source_filenames': (
+            'js/jquery-1.5.1.min.js',
+            'js/jquery.noConflict.js',
+            'js/jquery.newsblur.js',
+            'js/jquery.tinysort.js',
+            'js/jquery.simplemodal-1.3.js',
+            'js/jquery.corners.js',
+        ),
+        'output_filename': 'js/bookmarklet-compressed-?.js',
+    },
 }
 
 COMPRESS_CSS = {
     'all': {
         'source_filenames': (
             'css/reader.css',
+            'css/modals.css',
+            'css/status.css',
             'css/jquery-ui/jquery.theme.css',
             'css/jquery.tipsy.css',
         ),
@@ -148,6 +164,13 @@ COMPRESS_CSS = {
     'paypal': {
         'source_filenames': (
             'css/paypal_return.css',
+        ),
+        'output_filename': 'css/paypal-compressed-?.css',
+    },
+    'bookmarklet': {
+        'source_filenames': (
+            'css/reset.css',
+            'css/modals.css',
         ),
         'output_filename': 'css/paypal-compressed-?.css',
     },
@@ -182,20 +205,22 @@ DEBUG_TOOLBAR_PANELS = (
 # = Miscellaneous Settings =
 # ==========================
 
-AUTH_PROFILE_MODULE = 'newsblur.UserProfile'
+DAYS_OF_UNREAD          = 14
+SUBSCRIBER_EXPIRE       = 1
+
+AUTH_PROFILE_MODULE     = 'newsblur.UserProfile'
 TEST_DATABASE_COLLATION = 'utf8_general_ci'
-TEST_DATABASE_NAME = 'newsblur_test'
-ROOT_URLCONF = 'urls'
-INTERNAL_IPS = ('127.0.0.1',)
-LOGGING_LOG_SQL = True
-APPEND_SLASH = True
-SOUTH_TESTS_MIGRATE = False 
-SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
-TEST_RUNNER = "utils.testrunner.TestRunner"
-DAYS_OF_UNREAD = 14
-SUBSCRIBER_EXPIRE = 12
-SESSION_COOKIE_NAME = 'newsblur_sessionid'
-SESSION_COOKIE_AGE = 60*60*24*365*2 # 2 years
+TEST_DATABASE_NAME      = 'newsblur_test'
+ROOT_URLCONF            = 'urls'
+INTERNAL_IPS            = ('127.0.0.1',)
+LOGGING_LOG_SQL         = True
+APPEND_SLASH            = True
+SOUTH_TESTS_MIGRATE     = False 
+SESSION_ENGINE          = "django.contrib.sessions.backends.cached_db"
+TEST_RUNNER             = "utils.testrunner.TestRunner"
+SESSION_COOKIE_NAME     = 'newsblur_sessionid'
+SESSION_COOKIE_AGE      = 60*60*24*365*2 # 2 years
+
 
 # ===========
 # = Logging =
@@ -222,18 +247,20 @@ INSTALLED_APPS = (
     'apps.analyzer',
     'apps.feed_import',
     'apps.profile',
-    'devserver',
+    'apps.recommendations',
     'south',
-    # 'test_utils',
     'utils',
     'utils.typogrify',
     'utils.paypal.standard.ipn',
-    # 'debug_toolbar'
 )
 
 if not DEVELOPMENT:
     INSTALLED_APPS += (
         'gunicorn',
+    )
+elif DEVELOPMENT:
+    INSTALLED_APPS += (
+        'devserver',
     )
 
 DEVSERVER_MODULES = (
@@ -275,6 +302,7 @@ CELERY_QUEUES = {
     },
 }
 CELERY_DEFAULT_QUEUE = "update_feeds"
+BROKER_BACKEND = "amqplib"
 BROKER_HOST = "db01.newsblur.com"
 BROKER_PORT = 5672
 BROKER_USER = "newsblur"
@@ -287,10 +315,37 @@ CELERYD_LOG_LEVEL = 'ERROR'
 CELERY_IMPORTS = ("apps.rss_feeds.tasks", )
 CELERYD_CONCURRENCY = 4
 CELERY_IGNORE_RESULT = True
+CELERY_ACKS_LATE = True # Retry if task fails
 CELERYD_MAX_TASKS_PER_CHILD = 10
-#CELERYD_TASK_TIME_LIMIT = 12 * 30
+# CELERYD_TASK_TIME_LIMIT = 12 * 30
 CELERY_DISABLE_RATE_LIMITS = True
 
+# ====================
+# = Database Routers =
+# ====================
+
+class MasterSlaveRouter(object):
+    """A router that sets up a simple master/slave configuration"""
+
+    def db_for_read(self, model, **hints):
+        "Point all read operations to a random slave"
+        return 'slave'
+
+    def db_for_write(self, model, **hints):
+        "Point all write operations to the master"
+        return 'default'
+
+    def allow_relation(self, obj1, obj2, **hints):
+        "Allow any relation between two objects in the db pool"
+        db_list = ('slave','default')
+        if obj1._state.db in db_list and obj2._state.db in db_list:
+            return True
+        return None
+
+    def allow_syncdb(self, db, model):
+        "Explicitly put all models on all databases."
+        return True
+        
 # ==================
 # = Configurations =
 # ==================
@@ -317,4 +372,8 @@ DEBUG_TOOLBAR_CONFIG = {
 # = Mongo =
 # =========
 
-MONGODB = connect(MONGO_DB['NAME'], host=MONGO_DB['HOST'], port=MONGO_DB['PORT'])
+MONGODB = connect(MONGO_DB['NAME'], 
+                  host=MONGO_DB['HOST'], 
+                  port=MONGO_DB['PORT'], 
+                  username=MONGO_DB.get('USERNAME'), 
+                  password=MONGO_DB.get('PASSWORD'))

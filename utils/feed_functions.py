@@ -1,8 +1,11 @@
 import datetime
 import threading
 import sys
+import traceback
+import pprint
+from django.core.mail import mail_admins
 from django.utils.translation import ungettext
-from utils import feedfinder
+from utils import log as logging
 
 class TimeoutError(Exception): pass
 def timelimit(timeout):
@@ -29,12 +32,15 @@ def timelimit(timeout):
             if c.isAlive():
                 raise TimeoutError, 'took too long'
             if c.error:
+                tb = ''.join(traceback.format_exception(c.error[0], c.error[1], c.error[2]))
+                logging.debug(tb)
+                mail_admins('Error in timeout: %s' % c.error[0], tb)
                 raise c.error[0], c.error[1]
             return c.result
         return _2
     return _1
     
-def encode(tstr):
+def utf8encode(tstr):
     """ Encodes a unicode string in utf-8
     """
     if not tstr:
@@ -44,7 +50,10 @@ def encode(tstr):
         return tstr.encode('utf-8', "xmlcharrefreplace")
     except UnicodeDecodeError:
         # it's already UTF8.. sigh
-        return tstr.decode('utf-8').encode('utf-8')
+        try:
+            return tstr.decode('utf-8').encode('utf-8')
+        except UnicodeDecodeError:
+            return ''
 
 # From: http://www.poromenos.org/node/87
 def levenshtein_distance(first, second):
@@ -70,31 +79,6 @@ def levenshtein_distance(first, second):
             distance_matrix[i][j] = min(insertion, deletion, substitution)
     return distance_matrix[first_length-1][second_length-1]
     
-    
-def fetch_address_from_page(url, existing_feed=None):
-    from apps.rss_feeds.models import Feed, DuplicateFeed
-    feed_finder_url = feedfinder.feed(url)
-    if feed_finder_url:
-        if existing_feed:
-            if Feed.objects.filter(feed_address=feed_finder_url):
-                return None
-            existing_feed.feed_address = feed_finder_url
-            existing_feed.save()
-            feed = existing_feed
-        else:
-            duplicate_feed = DuplicateFeed.objects.filter(duplicate_address=feed_finder_url)
-            if duplicate_feed:
-                feed = [duplicate_feed[0].feed]
-            else:
-                feed = Feed.objects.filter(feed_address=feed_finder_url)
-            if not feed:
-                feed = Feed(feed_address=feed_finder_url)
-                feed.save()
-                feed.update()
-            else:
-                feed = feed[0]
-        return feed
-        
 def _do_timesince(d, chunks, now=None):
     """
     Started as a copy of django.util.timesince.timesince, but modified to
@@ -168,3 +152,28 @@ def format_relative_date(date, future=False):
         else:
             return "%s hours %s" % ((((diff.seconds / 60) + 15) / 60), 
                                     '' if future else 'ago')
+
+def add_object_to_folder(obj, folder, folders, parent='', added=False):
+    if not folder and not parent and obj not in folders:
+        folders.append(obj)
+        return folders
+
+    for k, v in enumerate(folders):
+        if isinstance(v, dict):
+            for f_k, f_v in v.items():
+                if f_k == folder and obj not in f_v and not added:
+                    f_v.append(obj)
+                    added = True
+                folders[k][f_k] = add_object_to_folder(obj, folder, f_v, f_k, added)
+    return folders  
+
+def mail_feed_error_to_admin(feed, e):
+    # Mail the admins with the error
+    exc_info = sys.exc_info()
+    subject = 'Feed update error: %s' % repr(e)
+    message = 'Traceback:\n%s\n\Feed:\n%s' % (
+        '\n'.join(traceback.format_exception(*exc_info)),
+        pprint.pformat(feed.__dict__)
+        )
+    # print message
+    mail_admins(subject, message)

@@ -1,12 +1,11 @@
 import difflib
 import datetime
-import hashlib
 import random
 import re
 import mongoengine as mongo
-import pymongo
 import zlib
 import urllib
+from pprint import pprint
 from collections import defaultdict
 from operator import itemgetter
 from BeautifulSoup import BeautifulStoneSoup
@@ -15,28 +14,31 @@ from django.db import models
 from django.db import IntegrityError
 from django.core.cache import cache
 from django.conf import settings
+from django.core.mail import mail_admins
 from mongoengine.queryset import OperationError
+from mongoengine.base import ValidationError
 from apps.rss_feeds.tasks import UpdateFeeds
 from celery.task import Task
 from utils import json_functions as json
 from utils import feedfinder
-from utils.feed_functions import levenshtein_distance
-from utils.feed_functions import timelimit
-from utils.story_functions import pre_process_story
-from utils.compressed_textfield import StoryField
-from utils.diff import HTMLDiff
+from utils import urlnorm
 from utils import log as logging
+from utils.fields import AutoOneToOneField
+from utils.feed_functions import levenshtein_distance
+from utils.feed_functions import timelimit, TimeoutError
+from utils.feed_functions import relative_timesince
+from utils.story_functions import pre_process_story
+from utils.diff import HTMLDiff
 
 ENTRY_NEW, ENTRY_UPDATED, ENTRY_SAME, ENTRY_ERR = range(4)
 
 class Feed(models.Model):
     feed_address = models.URLField(max_length=255, verify_exists=True, unique=True)
     feed_link = models.URLField(max_length=1000, default="", blank=True, null=True)
-    feed_title = models.CharField(max_length=255, default="", blank=True, null=True)
-    feed_tagline = models.CharField(max_length=1024, default="", blank=True, null=True)
-    active = models.BooleanField(default=True)
+    feed_title = models.CharField(max_length=255, default="[Untitled]", blank=True, null=True)
+    active = models.BooleanField(default=True, db_index=True)
     num_subscribers = models.IntegerField(default=-1)
-    active_subscribers = models.IntegerField(default=-1)
+    active_subscribers = models.IntegerField(default=-1, db_index=True)
     premium_subscribers = models.IntegerField(default=-1)
     last_update = models.DateTimeField(db_index=True)
     fetched_once = models.BooleanField(default=False)
@@ -50,31 +52,60 @@ class Feed(models.Model):
     last_modified = models.DateTimeField(null=True, blank=True)
     stories_last_month = models.IntegerField(default=0)
     average_stories_per_month = models.IntegerField(default=0)
-    story_count_history = models.TextField(blank=True, null=True)
     next_scheduled_update = models.DateTimeField(db_index=True)
     queued_date = models.DateTimeField(db_index=True)
     last_load_time = models.IntegerField(default=0)
-    popular_tags = models.CharField(max_length=1024, blank=True, null=True)
-    popular_authors = models.CharField(max_length=2048, blank=True, null=True)
-    
     
     def __unicode__(self):
         if not self.feed_title:
             self.feed_title = "[Untitled]"
             self.save()
         return self.feed_title
+        
+    def canonical(self, full=False):
+        feed = {
+            'id': self.pk,
+            'feed_title': self.feed_title,
+            'feed_address': self.feed_address,
+            'feed_link': self.feed_link,
+            'updated': relative_timesince(self.last_update),
+            'subs': self.num_subscribers,
+            'favicon': self.icon.data,
+            'favicon_color': self.icon.color,
+            'favicon_fetching': bool(not (self.icon.not_found or self.icon.data))
+        }
+        
+        if not self.fetched_once:
+            feed['not_yet_fetched'] = True
+        if self.has_page_exception or self.has_feed_exception:
+            feed['has_exception'] = True
+            feed['exception_type'] = 'feed' if self.has_feed_exception else 'page'
+            feed['exception_code'] = self.exception_code
+        elif full:
+            feed['has_exception'] = False
+            feed['exception_type'] = None
+            feed['exception_code'] = self.exception_code
+        
+        if full:
+            feed['feed_tags'] = json.decode(self.data.popular_tags) if self.data.popular_tags else []
+            feed['feed_authors'] = json.decode(self.data.popular_authors) if self.data.popular_authors else []
+
+            
+        return feed
+
 
     def save(self, *args, **kwargs):
-        if self.feed_tagline and len(self.feed_tagline) > 1024:
-            self.feed_tagline = self.feed_tagline[:1024]
         if not self.last_update:
             self.last_update = datetime.datetime.utcnow()
         if not self.next_scheduled_update:
             self.next_scheduled_update = datetime.datetime.utcnow()
         if not self.queued_date:
             self.queued_date = datetime.datetime.utcnow()
+            
+        max_feed_title = Feed._meta.get_field('feed_title').max_length
+        if len(self.feed_title) > max_feed_title:
+            self.feed_title = self.feed_title[:max_feed_title]
         
-
         try:
             super(Feed, self).save(*args, **kwargs)
         except IntegrityError, e:
@@ -88,8 +119,42 @@ class Feed(models.Model):
             pass
     
     @classmethod
+    def get_feed_from_url(cls, url):
+        feed = None
+    
+        def by_url(address):
+            feed = cls.objects.filter(feed_address=address)
+            if not feed:
+                duplicate_feed = DuplicateFeed.objects.filter(duplicate_address=address).order_by('pk')
+                if duplicate_feed:
+                    feed = [duplicate_feed[0].feed]
+                
+            return feed
+            
+        url = urlnorm.normalize(url)
+        feed = by_url(url)
+
+        if feed:
+            feed = feed[0]
+        else:
+            if feedfinder.isFeed(url):
+                feed = cls.objects.create(feed_address=url)
+                feed = feed.update()
+            else:
+                feed_finder_url = feedfinder.feed(url)
+                if feed_finder_url:
+                    feed = by_url(feed_finder_url)
+                    if not feed:
+                        feed = cls.objects.create(feed_address=feed_finder_url)
+                        feed = feed.update()
+                    else:
+                        feed = feed[0]
+                    
+        return feed
+        
+    @classmethod
     def task_feeds(cls, feeds, queue_size=12):
-        print " ---> Tasking %s feeds..." % feeds.count()
+        logging.debug(" ---> Tasking %s feeds..." % feeds.count())
         
         publisher = Task.get_publisher()
 
@@ -114,32 +179,50 @@ class Feed(models.Model):
         self.count_subscribers()
         self.set_next_scheduled_update()
         
-    @timelimit(20)
     def check_feed_address_for_feed_link(self):
-        feed_address = None
-
-        if not feedfinder.isFeed(self.feed_address):
-            feed_address = feedfinder.feed(self.feed_address)
-            if not feed_address:
-                feed_address = feedfinder.feed(self.feed_link)
-        else:
-            feed_address_from_link = feedfinder.feed(self.feed_link)
-            if feed_address_from_link != self.feed_address:
-                feed_address = feed_address_from_link
-        
-        if feed_address:
+        @timelimit(10)
+        def _1():
+            feed_address = None
             try:
-                self.feed_address = feed_address
-                self.next_scheduled_update = datetime.datetime.utcnow()
-                self.has_feed_exception = False
-                self.active = True
-                self.save()
-            except IntegrityError:
-                original_feed = Feed.objects.get(feed_address=feed_address)
-                original_feed.has_feed_exception = False
-                original_feed.active = True
-                original_feed.save()
-                merge_feeds(original_feed.pk, self.pk)
+                is_feed = feedfinder.isFeed(self.feed_address)
+            except KeyError:
+                is_feed = False
+            if not is_feed:
+                feed_address = feedfinder.feed(self.feed_address)
+                if not feed_address and self.feed_link:
+                    feed_address = feedfinder.feed(self.feed_link)
+            else:
+                feed_address_from_link = feedfinder.feed(self.feed_link)
+                if feed_address_from_link != self.feed_address:
+                    feed_address = feed_address_from_link
+        
+            if feed_address:
+                if feed_address.endswith('feedburner.com/atom.xml'):
+                    message = """
+                    %s - %s
+                    """ % (feed_address, pprint(self.feed.__dict__))
+                    mail_admins('Wierdo alert', message, fail_silently=True)
+                    return False
+                try:
+                    self.feed_address = feed_address
+                    self.next_scheduled_update = datetime.datetime.utcnow()
+                    self.has_feed_exception = False
+                    self.active = True
+                    self.save()
+                except IntegrityError:
+                    original_feed = Feed.objects.get(feed_address=feed_address)
+                    original_feed.has_feed_exception = False
+                    original_feed.active = True
+                    original_feed.save()
+                    merge_feeds(original_feed.pk, self.pk)
+            return feed_address
+        
+        try:
+            feed_address = _1()
+        except TimeoutError:
+            logging.debug('   ---> [%-30s] Feed address check timed out...' % (unicode(self.feed_title)[:30]))
+            self.save_feed_history(505, 'Timeout', '')
+            feed_address = None
         
         return not not feed_address
 
@@ -259,7 +342,7 @@ class Feed(models.Model):
         total = 0
         month_count = 0
         if not current_counts:
-            current_counts = self.story_count_history and json.decode(self.story_count_history)
+            current_counts = self.data.story_count_history and json.decode(self.data.story_count_history)
         
         if not current_counts:
             current_counts = []
@@ -284,17 +367,20 @@ class Feed(models.Model):
         res = MStory.objects(story_feed_id=self.pk).map_reduce(map_f, reduce_f, keep_temp=False)
         for r in res:
             dates[r.key] = r.value
+            year = int(re.findall(r"(\d{4})-\d{1,2}", r.key)[0])
+            if year < min_year:
+                min_year = year
                 
         # Add on to existing months, always amending up, never down. (Current month
         # is guaranteed to be accurate, since trim_feeds won't delete it until after
         # a month. Hacker News can have 1,000+ and still be counted.)
         for current_month, current_count in current_counts:
+            year = int(re.findall(r"(\d{4})-\d{1,2}", current_month)[0])
             if current_month not in dates or dates[current_month] < current_count:
                 dates[current_month] = current_count
-                year = int(re.findall(r"(\d{4})-\d{1,2}", current_month)[0])
-                if year < min_year:
-                    min_year = year
-
+            if year < min_year:
+                min_year = year
+        
         # Assemble a list with 0's filled in for missing months, 
         # trimming left and right 0's.
         months = []
@@ -308,8 +394,8 @@ class Feed(models.Model):
                         months.append((key, dates.get(key, 0)))
                         total += dates.get(key, 0)
                         month_count += 1
-        
-        self.story_count_history = json.encode(months)
+        self.data.story_count_history = json.encode(months)
+        self.data.save()
         if not total:
             self.average_stories_per_month = 0
         else:
@@ -336,6 +422,8 @@ class Feed(models.Model):
         disp = feed_fetcher.Dispatcher(options, 1)        
         disp.add_jobs([[self.pk]])
         disp.run_jobs()
+        
+        return Feed.objects.get(pk=self.pk)
 
     def add_update_stories(self, stories, existing_stories):
         ret_values = {
@@ -412,22 +500,22 @@ class Feed(models.Model):
                     except (IntegrityError, OperationError):
                         ret_values[ENTRY_ERR] += 1
                         logging.info('Saving updated story, IntegrityError: %s - %s' % (self.feed_title, story.get('title')))
+                    except ValidationError, e:
+                        ret_values[ENTRY_ERR] += 1
+                        logging.info('Saving updated story, ValidationError: %s - %s: %s' % (self.feed_title, story.get('title'), e))
                 else:
                     ret_values[ENTRY_SAME] += 1
                     # logging.debug("Unchanged story: %s " % story.get('title'))
             
         return ret_values
         
-    def save_popular_tags(self, feed_tags=None):
+    def save_popular_tags(self, feed_tags=None, verbose=False):
         if not feed_tags:
-            try:
-                all_tags = MStory.objects(story_feed_id=self.pk, story_tags__exists=True).item_frequencies('story_tags')
-            except pymongo.errors.OperationFailure, err:
-                print "Mongo Error on statistics: %s" % err
-                return
+            all_tags = MStory.objects(story_feed_id=self.pk, story_tags__exists=True).item_frequencies_mr('story_tags')
+                
             feed_tags = sorted([(k, v) for k, v in all_tags.items() if isinstance(v, float) and int(v) > 1], 
                                key=itemgetter(1), 
-                               reverse=True)[:20]
+                               reverse=True)[:25]
         popular_tags = json.encode(feed_tags)
         
         # TODO: This len() bullshit will be gone when feeds move to mongo
@@ -435,8 +523,8 @@ class Feed(models.Model):
         #       popular tags the size of a small planet. I'm looking at you
         #       Tumblr writers.
         if len(popular_tags) < 1024:
-            self.popular_tags = popular_tags
-            self.save()
+            self.data.popular_tags = popular_tags
+            self.data.save()
             return
 
         tags_list = json.decode(feed_tags) if feed_tags else []
@@ -453,15 +541,15 @@ class Feed(models.Model):
                                reverse=True)[:20]
 
         popular_authors = json.encode(feed_authors)
-        if len(popular_authors) < 1024:
-            self.popular_authors = popular_authors
-            self.save()
+        if len(popular_authors) < 1023:
+            self.data.popular_authors = popular_authors
+            self.data.save()
             return
 
         if len(feed_authors) > 1:
             self.save_popular_authors(feed_authors=feed_authors[:-1])
             
-    def trim_feed(self):
+    def trim_feed(self, verbose=False):
         from apps.reader.models import MUserStory
         trim_cutoff = 500
         if self.active_subscribers <= 1:
@@ -478,7 +566,8 @@ class Feed(models.Model):
             story_feed_id=self.pk,
         ).order_by('-story_date')
         if stories.count() > trim_cutoff:
-            # print 'Found %s stories in %s. Trimming...' % (stories.count(), self),
+            if verbose:
+                print 'Found %s stories in %s. Trimming to %s...' % (stories.count(), self, trim_cutoff)
             story_trim_date = stories[trim_cutoff].story_date
             extra_stories = MStory.objects(story_feed_id=self.pk, story_date__lte=story_trim_date)
             extra_stories.delete()
@@ -523,7 +612,7 @@ class Feed(models.Model):
         fcat = []
         if entry.has_key('tags'):
             for tcat in entry.tags:
-                if tcat.label:
+                if hasattr(tcat, 'label') and tcat.label:
                     term = tcat.label
                 elif tcat.term:
                     term = tcat.term
@@ -542,7 +631,8 @@ class Feed(models.Model):
                     if not tagname or tagname == ' ':
                         continue
                     fcat.append(tagname)
-        return fcat
+        fcat = [t[:250] for t in fcat]
+        return fcat[:12]
 
     def _exists_story(self, story=None, story_content=None, existing_stories=None):
         story_in_system = None
@@ -614,31 +704,32 @@ class Feed(models.Model):
             return self.min_to_decay, random_factor
             
         # Use stories per month to calculate next feed update
-        updates_per_day = self.stories_last_month / 30.0
+        updates_per_month = self.stories_last_month
         # if updates_per_day < 1 and self.num_subscribers > 2:
         #     updates_per_day = 1
         # 0 updates per day = 24 hours
         # 1 subscriber:
-        #   1 update per day = 6 hours
-        #   2 updates = 3.5 hours
-        #   4 updates = 2 hours
-        #   10 updates = 1 hour
+        #   0 updates per month = 4 hours
+        #   1 update = 2 hours
+        #   2 updates = 1.5 hours
+        #   4 updates = 1 hours
+        #   10 updates = .5 hour
         # 2 subscribers:
-        #   1 update per day = 4.5 hours
-        #   10 updates = 55 minutes
-        updates_per_day_delay = 6 * 60 / max(.25, ((max(0, self.num_subscribers)**.20) 
-                                                   * (updates_per_day**.70)))
+        #   1 update per day = 1 hours
+        #   10 updates = 20 minutes
+        updates_per_day_delay = 2 * 60 / max(.25, ((max(0, self.active_subscribers)**.15)
+                                                   * (updates_per_month**1.5)))
         if self.premium_subscribers > 0:
-            updates_per_day_delay = updates_per_day_delay / 4
+            updates_per_day_delay /= 5
         # Lots of subscribers = lots of updates
-        # 144 hours for 0 subscribers.
-        # 24 hours for 1 subscriber.
-        # 7 hours for 2 subscribers.
-        # 3 hours for 3 subscribers.
-        # 25 min for 10 subscribers.
-        subscriber_bonus = 24 * 60 / max(.167, max(0, self.num_subscribers)**1.35)
+        # 24 hours for 0 subscribers.
+        # 4 hours for 1 subscriber.
+        # .5 hours for 2 subscribers.
+        # .25 hours for 3 subscribers.
+        # 1 min for 10 subscribers.
+        subscriber_bonus = 4 * 60 / max(.167, max(0, self.active_subscribers)**3)
         if self.premium_subscribers > 0:
-            subscriber_bonus = subscriber_bonus / 4
+            subscriber_bonus /= 5
         
         slow_punishment = 0
         if self.num_subscribers <= 1:
@@ -648,7 +739,7 @@ class Feed(models.Model):
                 slow_punishment = 2 * self.last_load_time
             elif self.last_load_time >= 200:
                 slow_punishment = 6 * self.last_load_time
-        total = max(6, int(updates_per_day_delay + subscriber_bonus + slow_punishment))
+        total = max(4, int(updates_per_day_delay + subscriber_bonus + slow_punishment))
         # print "[%s] %s (%s-%s), %s, %s: %s" % (self, updates_per_day_delay, updates_per_day, self.num_subscribers, subscriber_bonus, slow_punishment, total)
         random_factor = random.randint(0, total) / 4
         
@@ -712,27 +803,40 @@ class Feed(models.Model):
 #     feed = models.ForeignKey(Feed)
 #     phrase = models.CharField(max_length=500)
         
-class Tag(models.Model):
-    feed = models.ForeignKey(Feed)
-    name = models.CharField(max_length=255)
-
-    def __unicode__(self):
-        return '%s - %s' % (self.feed, self.name)
+class FeedData(models.Model):
+    feed = AutoOneToOneField(Feed, related_name='data')
+    feed_tagline = models.CharField(max_length=1024, blank=True, null=True)
+    story_count_history = models.TextField(blank=True, null=True)
+    popular_tags = models.CharField(max_length=1024, blank=True, null=True)
+    popular_authors = models.CharField(max_length=2048, blank=True, null=True)
     
-    def save(self):
-        super(Tag, self).save()
+    def save(self, *args, **kwargs):
+        if self.feed_tagline and len(self.feed_tagline) >= 1000:
+            self.feed_tagline = self.feed_tagline[:1000]
         
-class StoryAuthor(models.Model):
-    feed = models.ForeignKey(Feed)
-    author_name = models.CharField(max_length=255, null=True, blank=True)
-        
-    def __unicode__(self):
-        return '%s - %s' % (self.feed, self.author_name)
+        try:    
+            super(FeedData, self).save(*args, **kwargs)
+        except (IntegrityError, OperationError):
+            if hasattr(self, 'id') and self.id: self.delete()
 
-class FeedPage(models.Model):
-    feed = models.OneToOneField(Feed, related_name="feed_page")
-    page_data = StoryField(null=True, blank=True)
+
+class FeedIcon(models.Model):
+    feed = AutoOneToOneField(Feed, primary_key=True, related_name='icon')
+    color = models.CharField(max_length=6, blank=True, null=True)
+    data = models.TextField(blank=True, null=True)
+    icon_url = models.CharField(max_length=2000, blank=True, null=True)
+    not_found = models.BooleanField(default=False)
     
+    def save(self, *args, **kwargs):
+        if self.icon_url:
+            self.icon_url = unicode(self.icon_url)
+        try:    
+            super(FeedIcon, self).save(*args, **kwargs)
+        except (IntegrityError, OperationError):
+            # print "Error on Icon: %s" % e
+            if hasattr(self, 'id'): self.delete()
+
+
 class MFeedPage(mongo.Document):
     feed_id = mongo.IntField(primary_key=True)
     page_data = mongo.BinaryField()
@@ -746,46 +850,25 @@ class MFeedPage(mongo.Document):
         if self.page_data:
             self.page_data = zlib.compress(self.page_data)
         super(MFeedPage, self).save(*args, **kwargs)
-
-class FeedXML(models.Model):
-    feed = models.OneToOneField(Feed, related_name="feed_xml")
-    rss_xml = StoryField(null=True, blank=True)
     
-class Story(models.Model):
-    '''A feed item'''
-    story_feed = models.ForeignKey(Feed, related_name="stories")
-    story_date = models.DateTimeField()
-    story_title = models.CharField(max_length=255)
-    story_content = StoryField(null=True, blank=True)
-    story_original_content = StoryField(null=True, blank=True)
-    story_content_type = models.CharField(max_length=255, null=True,
-                                          blank=True)
-    story_author = models.ForeignKey(StoryAuthor)
-    story_author_name = models.CharField(max_length=500, null=True, blank=True)
-    story_permalink = models.CharField(max_length=1000)
-    story_guid = models.CharField(max_length=1000)
-    story_guid_hash = models.CharField(max_length=40)
-    story_past_trim_date = models.BooleanField(default=False)
-    story_tags = models.CharField(max_length=2000, null=True, blank=True)
-
-    def __unicode__(self):
-        return self.story_title
-
-    class Meta:
-        verbose_name_plural = "stories"
-        verbose_name = "story"
-        db_table="stories"
-        ordering=["-story_date"]
-        unique_together = (("story_feed", "story_guid_hash"),)
-
-    def save(self, *args, **kwargs):
-        if not self.story_guid_hash and self.story_guid:
-            self.story_guid_hash = hashlib.md5(self.story_guid).hexdigest()
-        if len(self.story_title) > self._meta.get_field('story_title').max_length:
-            self.story_title = self.story_title[:255]
-        super(Story, self).save(*args, **kwargs)
+    @classmethod
+    def get_data(cls, feed_id):
+        data = None
+        feed_page = cls.objects(feed_id=feed_id)
         
+        if feed_page:
+            data = feed_page[0].page_data and zlib.decompress(feed_page[0].page_data)
         
+        if not data:
+            dupe_feed = DuplicateFeed.objects.filter(duplicate_feed_id=feed_id)
+            if dupe_feed:
+                feed = dupe_feed[0].feed
+                feed_page = MFeedPage.objects.filter(feed_id=feed.pk)
+                if feed_page:
+                    data = feed_page[0].page_data and zlib.decompress(feed_page[0].page_data)
+                    
+        return data
+
 class MStory(mongo.Document):
     '''A feed item'''
     story_feed_id            = mongo.IntField()
@@ -803,18 +886,24 @@ class MStory(mongo.Document):
 
     meta = {
         'collection': 'stories',
-        'indexes': ['story_date', ('story_feed_id', '-story_date')],
+        'indexes': [('story_feed_id', '-story_date')],
         'ordering': ['-story_date'],
         'allow_inheritance': False,
     }
     
     def save(self, *args, **kwargs):
+        story_title_max = MStory._fields['story_title'].max_length
+        story_content_type_max = MStory._fields['story_content_type'].max_length
         if self.story_content:
             self.story_content_z = zlib.compress(self.story_content)
             self.story_content = None
         if self.story_original_content:
             self.story_original_content_z = zlib.compress(self.story_original_content)
             self.story_original_content = None
+        if self.story_title and len(self.story_title) > story_title_max:
+            self.story_title = self.story_title[:story_title_max]
+        if self.story_content_type and len(self.story_content_type) > story_content_type_max:
+            self.story_content_type = self.story_content_type[:story_content_type_max]
         super(MStory, self).save(*args, **kwargs)
 
 
@@ -871,24 +960,6 @@ class FeedUpdateHistory(models.Model):
         super(FeedUpdateHistory, self).save(*args, **kwargs)
 
 
-class FeedFetchHistory(models.Model):
-    feed = models.ForeignKey(Feed, related_name='feed_fetch_history')
-    status_code = models.CharField(max_length=10, null=True, blank=True)
-    message = models.CharField(max_length=255, null=True, blank=True)
-    exception = models.TextField(null=True, blank=True)
-    fetch_date = models.DateTimeField(auto_now=True)
-    
-    def __unicode__(self):
-        return "[%s] %s (%s): %s %s: %s" % (
-            self.feed.id,
-            self.feed,
-            self.fetch_date,
-            self.status_code,
-            self.message,
-            self.exception and self.exception[:50]
-        )
-        
-        
 class MFeedFetchHistory(mongo.Document):
     feed_id = mongo.IntField()
     status_code = mongo.IntField()
@@ -907,23 +978,18 @@ class MFeedFetchHistory(mongo.Document):
             self.exception = unicode(self.exception)
         super(MFeedFetchHistory, self).save(*args, **kwargs)
         
-        
-class PageFetchHistory(models.Model):
-    feed = models.ForeignKey(Feed, related_name='page_fetch_history')
-    status_code = models.CharField(max_length=10, null=True, blank=True)
-    message = models.CharField(max_length=255, null=True, blank=True)
-    exception = models.TextField(null=True, blank=True)
-    fetch_date = models.DateTimeField(auto_now=True)
-    
-    def __unicode__(self):
-        return "[%s] %s (%s): %s %s: %s" % (
-            self.feed.id,
-            self.feed,
-            self.fetch_date,
-            self.status_code,
-            self.message,
-            self.exception and self.exception[:50]
-        )
+    @classmethod
+    def feed_history(cls, feed_id):
+        fetches = cls.objects(feed_id=feed_id).order_by('-fetch_date')
+        fetch_history = []
+        for fetch in fetches:
+            history                = {}
+            history['message']     = fetch.message
+            history['fetch_date']  = fetch.fetch_date
+            history['status_code'] = fetch.status_code
+            history['exception']   = fetch.exception
+            fetch_history.append(history)
+        return fetch_history
         
         
 class MPageFetchHistory(mongo.Document):
@@ -944,6 +1010,18 @@ class MPageFetchHistory(mongo.Document):
             self.exception = unicode(self.exception)
         super(MPageFetchHistory, self).save(*args, **kwargs)
 
+    @classmethod
+    def feed_history(cls, feed_id):
+        fetches = cls.objects(feed_id=feed_id).order_by('-fetch_date')
+        fetch_history = []
+        for fetch in fetches:
+            history                = {}
+            history['message']     = fetch.message
+            history['fetch_date']  = fetch.fetch_date
+            history['status_code'] = fetch.status_code
+            history['exception']   = fetch.exception
+            fetch_history.append(history)
+        return fetch_history
 
 class FeedLoadtime(models.Model):
     feed = models.ForeignKey(Feed)
@@ -954,9 +1032,12 @@ class FeedLoadtime(models.Model):
         return "%s: %s sec" % (self.feed, self.loadtime)
     
 class DuplicateFeed(models.Model):
-    duplicate_address = models.CharField(max_length=255, unique=True)
+    duplicate_address = models.CharField(max_length=255)
     duplicate_feed_id = models.CharField(max_length=255, null=True)
     feed = models.ForeignKey(Feed, related_name='duplicate_addresses')
+   
+    def __unicode__(self):
+        return "%s: %s" % (self.feed, self.duplicate_address)
 
 def merge_feeds(original_feed_id, duplicate_feed_id, force=False):
     from apps.reader.models import UserSubscription, UserSubscriptionFolders, MUserStory
@@ -1039,6 +1120,7 @@ def merge_feeds(original_feed_id, duplicate_feed_id, force=False):
                 duplicate.delete()
         
     delete_story_feed(MStory, 'story_feed_id')
+    delete_story_feed(MFeedPage, 'feed_id')
     switch_feed(MClassifierTitle)
     switch_feed(MClassifierAuthor)
     switch_feed(MClassifierFeed)

@@ -1,6 +1,9 @@
+import datetime
+import urllib
 import urlparse
 from utils import log as logging
 import oauth2 as oauth
+import uuid
 from django.contrib.sites.models import Site
 from django.db import IntegrityError
 from django.http import HttpResponse, HttpResponseRedirect
@@ -11,9 +14,9 @@ from django.contrib.auth import login as login_user
 from django.shortcuts import render_to_response
 from apps.reader.forms import SignupForm
 from apps.reader.models import UserSubscription
-from apps.feed_import.models import OAuthToken, OPMLImporter, GoogleReaderImporter
+from apps.feed_import.models import OAuthToken, OPMLImporter, OPMLExporter, GoogleReaderImporter
 from utils import json_functions as json
-from utils.user_functions import ajax_login_required
+from utils.user_functions import ajax_login_required, get_user
 
 
 @ajax_login_required
@@ -25,7 +28,7 @@ def opml_upload(request):
     
     if request.method == 'POST':
         if 'file' in request.FILES:
-            logging.info(" ---> [%s] ~FR~SBOPML upload starting..." % request.user)
+            logging.user(request.user, "~FR~SBOPML upload starting...")
             file = request.FILES['file']
             xml_opml = file.read()
             opml_importer = OPMLImporter(xml_opml, request.user)
@@ -33,7 +36,7 @@ def opml_upload(request):
 
             feeds = UserSubscription.objects.filter(user=request.user).values()
             payload = dict(folders=folders, feeds=feeds)
-            logging.info(" ---> [%s] ~FR~SBOPML Upload: ~SK%s~SN~SB~FR feeds" % (request.user, len(feeds)))
+            logging.user(request.user, "~FR~SBOPML Upload: ~SK%s~SN~SB~FR feeds" % (len(feeds)))
             
             request.session['import_from_google_reader'] = False
         else:
@@ -43,18 +46,29 @@ def opml_upload(request):
     data = json.encode(dict(message=message, code=code, payload=payload))
     return HttpResponse(data, mimetype='text/plain')
 
+def opml_export(request):
+    user     = get_user(request)
+    exporter = OPMLExporter(user)
+    opml     = exporter.process()
+    now      = datetime.datetime.now()
+    
+    response = HttpResponse(opml, mimetype='text/xml')
+    response['Content-Disposition'] = 'attachment; filename=NewsBlur Subscriptions - %s' % (
+        now.strftime('%d %B %Y')
+    )
+    
+    return response
         
-def reader_authorize(request):
-    logging.info(" ---> [%s] ~BB~FW~SBAuthorize Google Reader import - %s" % (
-        request.user,
+def reader_authorize(request): 
+    logging.user(request.user, "~BB~FW~SBAuthorize Google Reader import - %s" % (
         request.META['REMOTE_ADDR'],
     ))
     oauth_key = settings.OAUTH_KEY
     oauth_secret = settings.OAUTH_SECRET
     scope = "http://www.google.com/reader/api"
     request_token_url = ("https://www.google.com/accounts/OAuthGetRequestToken?"
-                         "scope=%s&oauth_callback=http://%s%s") % (
-                            scope,
+                         "scope=%s&secure=1&session=1&oauth_callback=http://%s%s") % (
+                            urllib.quote_plus(scope),
                             Site.objects.get_current().domain,
                             reverse('google-reader-callback'),
                          )
@@ -75,21 +89,27 @@ def reader_authorize(request):
     else:
         OAuthToken.objects.filter(session_id=request.session.session_key).delete()
         OAuthToken.objects.filter(remote_ip=request.META['REMOTE_ADDR']).delete()
+    auth_token_dict['uuid'] = str(uuid.uuid4())
     auth_token_dict['session_id'] = request.session.session_key
     auth_token_dict['remote_ip'] = request.META['REMOTE_ADDR']
     OAuthToken.objects.create(**auth_token_dict)
-                              
+                 
     redirect = "%s?oauth_token=%s" % (authorize_url, request_token['oauth_token'])
-    return HttpResponseRedirect(redirect)
+    response = HttpResponseRedirect(redirect)
+    response.set_cookie('newsblur_reader_uuid', auth_token_dict['uuid'])
+    return response
 
 def reader_callback(request):
     access_token_url = 'https://www.google.com/accounts/OAuthGetAccessToken'
     consumer = oauth.Consumer(settings.OAUTH_KEY, settings.OAUTH_SECRET)
+    user_token = None
 
     if request.user.is_authenticated():
         user_token = OAuthToken.objects.get(user=request.user)
     else:
         try:
+            user_token = OAuthToken.objects.get(uuid=request.COOKIES.get('newsblur_reader_uuid'))
+        except OAuthToken.DoesNotExist:
             user_token = OAuthToken.objects.get(session_id=request.session.session_key)
         except OAuthToken.DoesNotExist:
             user_tokens = OAuthToken.objects.filter(remote_ip=request.META['REMOTE_ADDR']).order_by('-created_date')
@@ -98,31 +118,34 @@ def reader_callback(request):
                 user_token = user_tokens[0]
                 user_token.session_id = request.session.session_key
                 user_token.save()
-                
-    # logging.info("Google Reader request.GET: %s" % request.GET)
-    # Authenticated in Google, so verify and fetch access tokens
-    token = oauth.Token(user_token.request_token, user_token.request_token_secret)
-    token.set_verifier(request.GET['oauth_verifier'])
-    client = oauth.Client(consumer, token)
-    resp, content = client.request(access_token_url, "POST")
-    access_token = dict(urlparse.parse_qsl(content))
-    # logging.info(" ---> [%s] OAuth Reader Content: %s -- %s" % (request.user, token, access_token))
-    user_token.access_token = access_token.get('oauth_token')
-    user_token.access_token_secret = access_token.get('oauth_token_secret')
-    try:
-        user_token.save()
-    except IntegrityError:
+    
+    if user_token and request.GET.get('oauth_verifier'):
+        # logging.info("Google Reader request.GET: %s" % request.GET)
+        # Authenticated in Google, so verify and fetch access tokens
+        token = oauth.Token(user_token.request_token, user_token.request_token_secret)
+        token.set_verifier(request.GET['oauth_verifier'])
+        client = oauth.Client(consumer, token)
+        resp, content = client.request(access_token_url, "POST")
+        access_token = dict(urlparse.parse_qsl(content))
+        user_token.access_token = access_token.get('oauth_token')
+        user_token.access_token_secret = access_token.get('oauth_token_secret')
+        try:
+            user_token.save()
+        except IntegrityError:
+            logging.info(" ***> [%s] Bad token from Google Reader. Re-authenticating." % (request.user,))
+            return HttpResponseRedirect(reverse('google-reader-authorize'))
+    
+        # Fetch imported feeds on next page load
+        request.session['import_from_google_reader'] = True
+    
+        logging.user(request.user, "~BB~FW~SBFinishing Google Reader import - %s" % (request.META['REMOTE_ADDR'],))
+    
+        if request.user.is_authenticated():
+            return HttpResponseRedirect(reverse('index'))
+    else:
         logging.info(" ***> [%s] Bad token from Google Reader. Re-authenticating." % (request.user,))
-        return HttpResponseRedirect(reverse('google-reader-authorize'))
-    
-    # Fetch imported feeds on next page load
-    request.session['import_from_google_reader'] = True
-    
-    logging.info(" ---> [%s] ~BB~FW~SBFinishing Google Reader import - %s" % (request.user, request.META['REMOTE_ADDR'],))
-    
-    if request.user.is_authenticated():
-        return HttpResponseRedirect(reverse('index'))
-    
+        return HttpResponseRedirect(reverse('google-reader-authorize'))    
+
     return HttpResponseRedirect(reverse('import-signup'))
     
 @json.json_view

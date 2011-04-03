@@ -28,7 +28,7 @@ NEWSBLUR.ReaderFeedException.prototype = {
             $.make('div', { className: 'NB-modal-loading' }),
             $.make('h2', { className: 'NB-modal-title' }, 'Fix a misbehaving site'),
             $.make('h2', { className: 'NB-modal-subtitle' }, [
-                $.make('img', { className: 'NB-modal-feed-image feed_favicon', src: NEWSBLUR.Globals.google_favicon_url + this.feed.feed_link }),
+                $.make('img', { className: 'NB-modal-feed-image feed_favicon', src: $.favicon(this.feed.favicon) }),
                 $.make('span', { className: 'NB-modal-feed-title' }, this.feed.feed_title)
             ]),
             $.make('div', { className: 'NB-fieldset NB-exception-option NB-exception-option-retry NB-modal-submit' }, [
@@ -170,8 +170,8 @@ NEWSBLUR.ReaderFeedException.prototype = {
         $('.NB-modal-submit-retry', this.$modal).addClass('NB-disabled').attr('value', 'Fetching...');
         
         this.model.save_exception_retry(this.feed_id, function() {
-            NEWSBLUR.reader.flags['has_unfetched_feeds'] = true;
-            NEWSBLUR.reader.force_instafetch_stories(self.feed_id);
+            // NEWSBLUR.reader.flags['has_unfetched_feeds'] = true;
+            // NEWSBLUR.reader.force_instafetch_stories(self.feed_id);
             $.modal.close();
         });
     },
@@ -201,8 +201,8 @@ NEWSBLUR.ReaderFeedException.prototype = {
         
         if (feed_address.length) {
             this.model.save_exception_change_feed_address(feed_id, feed_address, function(code) {
-                NEWSBLUR.reader.flags['has_unfetched_feeds'] = true;
-                NEWSBLUR.reader.load_feeds();
+                // NEWSBLUR.reader.flags['has_unfetched_feeds'] = true;
+                // NEWSBLUR.reader.load_feeds();
                 $.modal.close();
             });
         }
@@ -219,8 +219,8 @@ NEWSBLUR.ReaderFeedException.prototype = {
         
         if (feed_link.length) {
             this.model.save_exception_change_feed_link(feed_id, feed_link, function(code) {
-                NEWSBLUR.reader.flags['has_unfetched_feeds'] = true;
-                NEWSBLUR.reader.load_feeds();
+                // NEWSBLUR.reader.flags['has_unfetched_feeds'] = true;
+                // NEWSBLUR.reader.load_feeds();
                 $.modal.close();
             });
         }

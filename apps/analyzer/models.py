@@ -1,7 +1,7 @@
 import mongoengine as mongo
 from django.db import models
 from django.contrib.auth.models import User
-from apps.rss_feeds.models import Feed, StoryAuthor, Tag
+from apps.rss_feeds.models import Feed
 
 class FeatureCategory(models.Model):
     user = models.ForeignKey(User)
@@ -22,20 +22,7 @@ class Category(models.Model):
     def __unicode__(self):
         return '%s (%s)' % (self.category, self.count)
         
-        
-class ClassifierTitle(models.Model):
-    user = models.ForeignKey(User)
-    score = models.SmallIntegerField()
-    title = models.CharField(max_length=255)
-    feed = models.ForeignKey(Feed)
-    # original_story = models.ForeignKey(Story, null=True)
-    creation_date = models.DateTimeField(auto_now=True)
-    
-    unique_together = (('user', 'feed', 'title'),)
-    
-    def __unicode__(self):
-        return '%s: %s (%s)' % (self.user, self.title, self.feed)
-        
+
 class MClassifierTitle(mongo.Document):
     user_id = mongo.IntField()
     feed_id = mongo.IntField()
@@ -49,19 +36,6 @@ class MClassifierTitle(mongo.Document):
         'allow_inheritance': False,
     }
             
-class ClassifierAuthor(models.Model):
-    user = models.ForeignKey(User)
-    score = models.SmallIntegerField()
-    author = models.ForeignKey(StoryAuthor)
-    feed = models.ForeignKey(Feed)
-    # original_story = models.ForeignKey(Story, null=True)
-    creation_date = models.DateTimeField(auto_now=True)
-    
-    unique_together = (('user', 'feed', 'author'),)
-    
-    def __unicode__(self):
-        return '%s: %s (%s)' % (self.user, self.author.author_name, self.feed)
-        
 class MClassifierAuthor(mongo.Document):
     user_id = mongo.IntField()
     feed_id = mongo.IntField()
@@ -76,18 +50,6 @@ class MClassifierAuthor(mongo.Document):
     }
     
 
-class ClassifierFeed(models.Model):
-    user = models.ForeignKey(User)
-    score = models.SmallIntegerField()
-    feed = models.ForeignKey(Feed)
-    # original_story = models.ForeignKey(Story, null=True)
-    creation_date = models.DateTimeField(auto_now=True)
-    
-    unique_together = (('user', 'feed'),)
-    
-    def __unicode__(self):
-        return '%s: %s' % (self.user, self.feed)
-        
 class MClassifierFeed(mongo.Document):
     user_id = mongo.IntField()
     feed_id = mongo.IntField(unique_with='user_id')
@@ -100,19 +62,6 @@ class MClassifierFeed(mongo.Document):
         'allow_inheritance': False,
     }
     
-        
-class ClassifierTag(models.Model):
-    user = models.ForeignKey(User)
-    score = models.SmallIntegerField()
-    tag = models.ForeignKey(Tag)
-    feed = models.ForeignKey(Feed)
-    # original_story = models.ForeignKey(Story, null=True)
-    creation_date = models.DateTimeField(auto_now=True)
-    
-    unique_together = (('user', 'feed', 'tag'),)
-    
-    def __unicode__(self):
-        return '%s: %s (%s)' % (self.user, self.tag.name, self.feed)
         
 class MClassifierTag(mongo.Document):
     user_id = mongo.IntField()
@@ -129,32 +78,39 @@ class MClassifierTag(mongo.Document):
     
     
 def apply_classifier_titles(classifiers, story):
+    score = 0
     for classifier in classifiers:
         if classifier.title.lower() in story['story_title'].lower():
             # print 'Titles: (%s) %s -- %s' % (classifier.title in story['story_title'], classifier.title, story['story_title'])
-            return classifier.score
-    return 0
+            score = classifier.score
+            if score > 0: return score
+    return score
     
 def apply_classifier_feeds(classifiers, feed):
+    feed_id = feed if isinstance(feed, int) else feed.pk
     for classifier in classifiers:
-        if classifier.feed_id == feed.pk:
+        if classifier.feed_id == feed_id:
             # print 'Feeds: %s -- %s' % (classifier.feed_id, feed.pk)
             return classifier.score
     return 0
     
 def apply_classifier_authors(classifiers, story):
+    score = 0
     for classifier in classifiers:
         if story.get('story_authors') and classifier.author == story.get('story_authors'):
             # print 'Authors: %s -- %s' % (classifier.author, story['story_authors'])
-            return classifier.score
-    return 0
+            score = classifier.score
+            if score > 0: return classifier.score
+    return score
     
 def apply_classifier_tags(classifiers, story):
+    score = 0
     for classifier in classifiers:
         if story['story_tags'] and classifier.tag in story['story_tags']:
             # print 'Tags: (%s-%s) %s -- %s' % (classifier.tag in story['story_tags'], classifier.score, classifier.tag, story['story_tags'])
-            return classifier.score
-    return 0
+            score = classifier.score
+            if score > 0: return classifier.score
+    return score
     
 def get_classifiers_for_user(user, feed_id, classifier_feeds=None, classifier_authors=None, classifier_titles=None, classifier_tags=None):
     if classifier_feeds is None:
