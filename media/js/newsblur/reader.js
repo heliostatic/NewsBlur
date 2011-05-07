@@ -4838,7 +4838,7 @@
                 $module.removeClass('NB-loading');
                 self.counts['feature_page'] += direction;
                 
-                var $table = $.make('table', { cellSpacing: 0, cellPadding: 0 });
+                var $table = $.make('table', { className: 'NB-features', cellSpacing: 0, cellPadding: 0 });
                 for (var f in features) {
                     if (f == 3) break;
                     var feature = features[f];
@@ -4849,7 +4849,7 @@
                     $table.append($tr);
                 }
                 
-                $('.NB-module-features table').replaceWith($table);
+                $('.NB-module-features .NB-features').replaceWith($table);
                 
                 var features_count = features.length;
                 if (features_count < 4) {
